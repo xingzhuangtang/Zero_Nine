@@ -59,10 +59,7 @@ impl Default for ProjectManifest {
             version: "0.1.0".to_string(),
             name: "Zero_Nine".to_string(),
             default_host: HostKind::Terminal,
-            skill_dirs: vec![
-                ".claude/skills".to_string(),
-                ".opencode/skills".to_string(),
-            ],
+            skill_dirs: vec![".claude/skills".to_string(), ".opencode/skills".to_string()],
             policy: Policy::default(),
         }
     }
@@ -159,7 +156,150 @@ pub struct Proposal {
     pub design_summary: Option<String>,
     #[serde(default)]
     pub source_brainstorm_session_id: Option<String>,
+
+    // M1: Structured Spec Contract Fields (蓝图 M1-1)
+    #[serde(default)]
+    pub problem_statement: Option<String>,
+    #[serde(default)]
+    pub scope_in: Vec<String>,
+    #[serde(default)]
+    pub scope_out: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<Constraint>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<AcceptanceCriterion>,
+    #[serde(default)]
+    pub risks: Vec<Risk>,
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
+
     pub tasks: Vec<TaskItem>,
+}
+
+/// M1-1: Constraint 结构 (蓝图 M1-1)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Constraint {
+    pub id: String,
+    pub category: ConstraintCategory,
+    pub description: String,
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub enforced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintCategory {
+    Technical,
+    Business,
+    Regulatory,
+    Performance,
+    Security,
+    Timeline,
+    Resource,
+}
+
+/// M1-3: AcceptanceCriterion 结构 (蓝图 M1-3)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcceptanceCriterion {
+    pub id: String,
+    pub description: String,
+    pub verification_method: VerificationMethod,
+    pub priority: Priority,
+    #[serde(default)]
+    pub status: CriterionStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    AutomatedTest,
+    ManualInspection,
+    PerformanceBenchmark,
+    SecurityAudit,
+    UserAcceptance,
+    DocumentationReview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionStatus {
+    Pending,
+    Verified,
+    Failed,
+    Blocked,
+}
+
+impl Default for CriterionStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+/// M1-1: Risk 结构 (蓝图 M1-1)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Risk {
+    pub id: String,
+    pub description: String,
+    pub probability: RiskProbability,
+    pub impact: RiskImpact,
+    pub mitigation: Option<String>,
+    pub owner: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskProbability {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskImpact {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// M1-1: Dependency 结构
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Dependency {
+    pub id: String,
+    pub description: String,
+    pub kind: DependencyKind,
+    pub status: DependencyStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyKind {
+    Internal,
+    External,
+    ThirdParty,
+    Infrastructure,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyStatus {
+    Satisfied,
+    Pending,
+    Blocked,
+    AtRisk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,7 +514,10 @@ impl DriftCheckResult {
         let blocking = matches!(
             report.highest_severity(),
             Some(DriftSeverity::Blocking | DriftSeverity::Dangerous)
-        ) || matches!(report.response, DriftResponse::Confirm | DriftResponse::Halt);
+        ) || matches!(
+            report.response,
+            DriftResponse::Confirm | DriftResponse::Halt
+        );
         Self { report, blocking }
     }
 }
@@ -405,7 +548,10 @@ impl RemoteReadinessCheck {
             notes.push("GitHub CLI is not available in the current environment.".to_string());
         }
         if self.required && !self.readiness.gh_authenticated {
-            notes.push("GitHub CLI is available but not authenticated for remote PR or merge actions.".to_string());
+            notes.push(
+                "GitHub CLI is available but not authenticated for remote PR or merge actions."
+                    .to_string(),
+            );
         }
         notes
     }
@@ -585,7 +731,12 @@ pub fn response_for_highest_severity(severity: Option<DriftSeverity>) -> DriftRe
 }
 
 pub fn has_blocking_drift(diffs: &[StateDiff]) -> bool {
-    diffs.iter().any(|diff| matches!(diff.severity, DriftSeverity::Blocking | DriftSeverity::Dangerous))
+    diffs.iter().any(|diff| {
+        matches!(
+            diff.severity,
+            DriftSeverity::Blocking | DriftSeverity::Dangerous
+        )
+    })
 }
 
 pub fn highest_drift_severity(diffs: &[StateDiff]) -> Option<DriftSeverity> {
@@ -1287,5 +1438,345 @@ pub fn slugify_goal(goal: &str) -> String {
         format!("goal-{:x}", goal.chars().count())
     } else {
         normalized
+    }
+}
+
+// ==================== M1: Default Implementations ====================
+
+impl Default for Constraint {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            category: ConstraintCategory::Technical,
+            description: String::new(),
+            rationale: None,
+            enforced: false,
+        }
+    }
+}
+
+impl Default for AcceptanceCriterion {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            description: String::new(),
+            verification_method: VerificationMethod::AutomatedTest,
+            priority: Priority::Medium,
+            status: CriterionStatus::Pending,
+        }
+    }
+}
+
+impl Default for Risk {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            description: String::new(),
+            probability: RiskProbability::Medium,
+            impact: RiskImpact::Medium,
+            mitigation: None,
+            owner: None,
+        }
+    }
+}
+
+impl Default for Dependency {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            description: String::new(),
+            kind: DependencyKind::Internal,
+            status: DependencyStatus::Pending,
+        }
+    }
+}
+
+impl Default for Proposal {
+    fn default() -> Self {
+        Self {
+            schema_version: default_spec_schema_version(),
+            id: String::new(),
+            title: String::new(),
+            goal: String::new(),
+            status: ProposalStatus::Draft,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            design_summary: None,
+            source_brainstorm_session_id: None,
+            problem_statement: None,
+            scope_in: Vec::new(),
+            scope_out: Vec::new(),
+            constraints: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            risks: Vec::new(),
+            dependencies: Vec::new(),
+            non_goals: Vec::new(),
+            tasks: Vec::new(),
+        }
+    }
+}
+
+// ==================== M1-2: DAG Validation ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DagValidationError {
+    pub error_code: DagErrorCode,
+    pub message: String,
+    pub involved_task_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DagErrorCode {
+    CircularDependency,
+    MissingDependency,
+    SelfReference,
+    DuplicateTaskId,
+    EmptyTaskGraph,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagValidationResult {
+    pub valid: bool,
+    pub errors: Vec<DagValidationError>,
+    pub warnings: Vec<String>,
+    pub critical_path: Vec<String>,
+    pub max_depth: u32,
+}
+
+impl TaskGraph {
+    /// M1-2: Validate DAG for cycles, missing dependencies, self-references
+    pub fn validate_dag(&self) -> DagValidationResult {
+        let mut errors = Vec::new();
+        let warnings = Vec::new();
+
+        // Check for empty graph
+        if self.tasks.is_empty() {
+            errors.push(DagValidationError {
+                error_code: DagErrorCode::EmptyTaskGraph,
+                message: "Task graph contains no tasks".to_string(),
+                involved_task_ids: Vec::new(),
+            });
+            return DagValidationResult {
+                valid: false,
+                errors,
+                warnings,
+                critical_path: Vec::new(),
+                max_depth: 0,
+            };
+        }
+
+        // Check for duplicate task IDs
+        let mut task_ids = std::collections::HashMap::new();
+        for task in &self.tasks {
+            if task_ids.contains_key(&task.id) {
+                errors.push(DagValidationError {
+                    error_code: DagErrorCode::DuplicateTaskId,
+                    message: format!("Duplicate task ID: {}", task.id),
+                    involved_task_ids: vec![task.id.clone()],
+                });
+            } else {
+                task_ids.insert(task.id.clone(), task);
+            }
+        }
+
+        // Check for self-references and missing dependencies
+        for task in &self.tasks {
+            for dep in &task.depends_on {
+                if dep == &task.id {
+                    errors.push(DagValidationError {
+                        error_code: DagErrorCode::SelfReference,
+                        message: format!("Task {} references itself", task.id),
+                        involved_task_ids: vec![task.id.clone()],
+                    });
+                } else if !task_ids.contains_key(dep) {
+                    errors.push(DagValidationError {
+                        error_code: DagErrorCode::MissingDependency,
+                        message: format!("Task {} depends on non-existent task {}", task.id, dep),
+                        involved_task_ids: vec![task.id.clone(), dep.clone()],
+                    });
+                }
+            }
+        }
+
+        // Check for circular dependencies using DFS
+        let cycles = self.detect_cycles();
+        if !cycles.is_empty() {
+            let involved: Vec<String> = cycles.iter().flatten().cloned().collect();
+            errors.push(DagValidationError {
+                error_code: DagErrorCode::CircularDependency,
+                message: format!("Circular dependency detected: {}", cycles[0].join(" -> ")),
+                involved_task_ids: involved,
+            });
+        }
+
+        let critical_path = self.compute_critical_path();
+        let max_depth = self.compute_max_depth();
+
+        DagValidationResult {
+            valid: errors.is_empty(),
+            errors,
+            warnings,
+            critical_path,
+            max_depth,
+        }
+    }
+
+    fn detect_cycles(&self) -> Vec<Vec<String>> {
+        let mut cycles = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut rec_stack = std::collections::HashSet::new();
+        let mut path = Vec::new();
+
+        for task in &self.tasks {
+            if !visited.contains(&task.id) {
+                self.dfs_cycle_check(task, &mut visited, &mut rec_stack, &mut path, &mut cycles);
+            }
+        }
+
+        cycles
+    }
+
+    fn dfs_cycle_check(
+        &self,
+        task: &TaskItem,
+        visited: &mut std::collections::HashSet<String>,
+        rec_stack: &mut std::collections::HashSet<String>,
+        path: &mut Vec<String>,
+        cycles: &mut Vec<Vec<String>>,
+    ) {
+        visited.insert(task.id.clone());
+        rec_stack.insert(task.id.clone());
+        path.push(task.id.clone());
+
+        for dep_id in &task.depends_on {
+            if !visited.contains(dep_id) {
+                if let Some(dep_task) = self.tasks.iter().find(|t| &t.id == dep_id) {
+                    self.dfs_cycle_check(dep_task, visited, rec_stack, path, cycles);
+                }
+            } else if rec_stack.contains(dep_id) {
+                let cycle_start = path.iter().position(|x| x == dep_id).unwrap_or(0);
+                let mut cycle: Vec<String> = path[cycle_start..].to_vec();
+                cycle.push(dep_id.clone());
+                cycles.push(cycle);
+            }
+        }
+
+        path.pop();
+        rec_stack.remove(&task.id);
+    }
+
+    fn compute_critical_path(&self) -> Vec<String> {
+        // Simple implementation: find longest path in DAG
+        let mut dist: std::collections::HashMap<String, (u32, String)> =
+            std::collections::HashMap::new();
+
+        // Initialize
+        for task in &self.tasks {
+            dist.insert(task.id.clone(), (0, String::new()));
+        }
+
+        // Topological sort and longest path
+        let mut result = Vec::new();
+        let mut in_degree: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for task in &self.tasks {
+            in_degree.insert(task.id.clone(), task.depends_on.len());
+        }
+
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        while let Some(task_id) = queue.pop() {
+            result.push(task_id.clone());
+            if let Some(&(d, _)) = dist.get(&task_id) {
+                for task in &self.tasks {
+                    if task.depends_on.contains(&task_id) {
+                        let new_dist = d + 1;
+                        if let Some(entry) = dist.get_mut(&task.id) {
+                            if new_dist > entry.0 {
+                                *entry = (new_dist, task_id.clone());
+                            }
+                        }
+                        if let Some(deg) = in_degree.get_mut(&task.id) {
+                            *deg -= 1;
+                            if *deg == 0 {
+                                queue.push(task.id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Backtrack to find critical path
+        if result.is_empty() {
+            return Vec::new();
+        }
+
+        let mut max_task = result[0].clone();
+        let mut max_dist = 0;
+        for (task_id, &(d, _)) in &dist {
+            if d > max_dist {
+                max_dist = d;
+                max_task = task_id.clone();
+            }
+        }
+
+        let mut critical_path = Vec::new();
+        let mut current = max_task;
+        while !current.is_empty() {
+            critical_path.push(current.clone());
+            if let Some((_, prev)) = dist.get(&current) {
+                current = prev.clone();
+            } else {
+                break;
+            }
+        }
+        critical_path.reverse();
+        critical_path
+    }
+
+    fn compute_max_depth(&self) -> u32 {
+        let mut depths: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+        fn compute_depth(
+            task_id: &str,
+            tasks: &[TaskItem],
+            depths: &mut std::collections::HashMap<String, u32>,
+        ) -> u32 {
+            if let Some(&d) = depths.get(task_id) {
+                return d;
+            }
+
+            let task = match tasks.iter().find(|t| &t.id == task_id) {
+                Some(t) => t,
+                None => return 0,
+            };
+
+            let depth = if task.depends_on.is_empty() {
+                1
+            } else {
+                task.depends_on
+                    .iter()
+                    .map(|dep| compute_depth(dep, tasks, depths))
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            };
+
+            depths.insert(task_id.to_string(), depth);
+            depth
+        }
+
+        self.tasks
+            .iter()
+            .map(|t| compute_depth(&t.id, &self.tasks, &mut depths))
+            .max()
+            .unwrap_or(0)
     }
 }

@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use zn_types::{
-    default_spec_schema_version, BrainstormSession, LoopState, LoopStage, ProgressRecord,
+    default_spec_schema_version, BrainstormSession, LoopStage, LoopState, ProgressRecord,
     ProjectManifest, Proposal, ProposalStatus, RequirementPacket, RuntimeEvent, SpecBundle,
     SpecValidationIssue, SpecValidationReport, SpecValidationSeverity, TaskContract,
     TaskDependencyEdge, TaskGraph, TaskItem, TaskStatus,
@@ -257,6 +257,42 @@ fn create_proposal_from_packet(
     fs::create_dir_all(proposal_dir.join("artifacts"))?;
 
     let now = Utc::now();
+
+    // M1: Build structured spec contract from RequirementPacket
+    let mut acceptance_criteria = Vec::new();
+    for (idx, criterion) in packet.acceptance_criteria.iter().enumerate() {
+        acceptance_criteria.push(zn_types::AcceptanceCriterion {
+            id: format!("ac-{}", idx + 1),
+            description: criterion.clone(),
+            verification_method: zn_types::VerificationMethod::AutomatedTest,
+            priority: zn_types::Priority::High,
+            status: zn_types::CriterionStatus::Pending,
+        });
+    }
+
+    let mut constraints = Vec::new();
+    for (idx, constraint) in packet.constraints.iter().enumerate() {
+        constraints.push(zn_types::Constraint {
+            id: format!("c-{}", idx + 1),
+            category: zn_types::ConstraintCategory::Technical,
+            description: constraint.clone(),
+            rationale: None,
+            enforced: true,
+        });
+    }
+
+    let mut risks = Vec::new();
+    for (idx, risk) in packet.risks.iter().enumerate() {
+        risks.push(zn_types::Risk {
+            id: format!("r-{}", idx + 1),
+            description: risk.clone(),
+            probability: zn_types::RiskProbability::Medium,
+            impact: zn_types::RiskImpact::Medium,
+            mitigation: None,
+            owner: None,
+        });
+    }
+
     let proposal = Proposal {
         schema_version: default_spec_schema_version(),
         id: id.clone(),
@@ -271,6 +307,17 @@ fn create_proposal_from_packet(
         updated_at: now,
         design_summary,
         source_brainstorm_session_id: session.map(|item| item.id.clone()),
+
+        // M1: Structured spec contract fields
+        problem_statement: Some(packet.problem_statement.clone()),
+        scope_in: packet.scope_in.clone(),
+        scope_out: packet.scope_out.clone(),
+        constraints,
+        acceptance_criteria,
+        risks,
+        dependencies: Vec::new(),
+        non_goals: Vec::new(),
+
         tasks: default_tasks(goal),
     };
 
@@ -302,10 +349,15 @@ fn create_proposal_from_packet(
 }
 
 pub fn proposal_dir(project_root: &Path, proposal_id: &str) -> PathBuf {
-    zero_nine_dir(project_root).join("proposals").join(proposal_id)
+    zero_nine_dir(project_root)
+        .join("proposals")
+        .join(proposal_id)
 }
 
-pub fn save_brainstorm_session(project_root: &Path, session: &BrainstormSession) -> Result<PathBuf> {
+pub fn save_brainstorm_session(
+    project_root: &Path,
+    session: &BrainstormSession,
+) -> Result<PathBuf> {
     ensure_layout(project_root)?;
     let path = brainstorm_dir(project_root)
         .join("sessions")
@@ -389,7 +441,8 @@ pub fn requirement_packet_from_brainstorm(session: &BrainstormSession) -> Requir
         session,
         "acceptance_criteria",
         vec![
-            "The clarified goal is explicit enough to drive planning without guesswork.".to_string(),
+            "The clarified goal is explicit enough to drive planning without guesswork."
+                .to_string(),
             "OpenSpec artifacts reflect the clarified requirement contract.".to_string(),
         ],
     );
@@ -414,7 +467,8 @@ pub fn requirement_packet_from_brainstorm(session: &BrainstormSession) -> Requir
         risks,
         next_questions: next_questions.clone(),
         source_brainstorm_session_id: Some(session.id.clone()),
-        clarified: next_questions.is_empty() && matches!(session.verdict, zn_types::BrainstormVerdict::Ready),
+        clarified: next_questions.is_empty()
+            && matches!(session.verdict, zn_types::BrainstormVerdict::Ready),
     }
 }
 
@@ -581,7 +635,10 @@ pub fn write_progress_files(project_root: &Path, proposal: &Proposal) -> Result<
     };
 
     let dir = proposal_dir(project_root, &proposal.id);
-    fs::write(dir.join("progress.json"), serde_json::to_vec_pretty(&record)?)?;
+    fs::write(
+        dir.join("progress.json"),
+        serde_json::to_vec_pretty(&record)?,
+    )?;
     fs::write(
         dir.join("progress.txt"),
         format!(
@@ -629,7 +686,12 @@ fn runnable_task_ids(proposal: &Proposal) -> Vec<String> {
     proposal
         .tasks
         .iter()
-        .filter(|task| matches!(task.status, TaskStatus::Pending | TaskStatus::Running | TaskStatus::Failed))
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::Running | TaskStatus::Failed
+            )
+        })
         .filter(|task| {
             task.depends_on
                 .iter()
@@ -761,7 +823,9 @@ pub fn status_summary(project_root: &Path) -> Result<String> {
         ));
         lines.push(format!(
             "subagent_recovery_ledgers: {}",
-            current_task_dir.join("subagent-recovery-ledger.json").display()
+            current_task_dir
+                .join("subagent-recovery-ledger.json")
+                .display()
         ));
         lines.push(format!(
             "subagent_replay_scripts: {}",
@@ -806,8 +870,14 @@ fn write_core_spec_files(
     packet: &RequirementPacket,
 ) -> Result<()> {
     let dir = proposal_dir(project_root, &proposal.id);
-    fs::write(dir.join("proposal.md"), render_proposal_markdown(proposal, packet))?;
-    fs::write(dir.join("design.md"), render_design_markdown(proposal, packet))?;
+    fs::write(
+        dir.join("proposal.md"),
+        render_proposal_markdown(proposal, packet),
+    )?;
+    fs::write(
+        dir.join("design.md"),
+        render_design_markdown(proposal, packet),
+    )?;
     fs::write(dir.join("tasks.md"), render_tasks_markdown(&proposal.tasks))?;
     fs::write(
         dir.join("dag.json"),
@@ -822,7 +892,10 @@ fn write_core_spec_files(
     Ok(())
 }
 
-pub fn validate_proposal_spec(project_root: &Path, proposal: &Proposal) -> Result<SpecValidationReport> {
+pub fn validate_proposal_spec(
+    project_root: &Path,
+    proposal: &Proposal,
+) -> Result<SpecValidationReport> {
     let dir = proposal_dir(project_root, &proposal.id);
     let bundle = spec_bundle(project_root, &proposal.id);
     let mut issues = Vec::new();
@@ -934,12 +1007,19 @@ pub fn validate_proposal_spec(project_root: &Path, proposal: &Proposal) -> Resul
             ));
         }
         for dependency in &task.depends_on {
-            if !proposal.tasks.iter().any(|candidate| &candidate.id == dependency) {
+            if !proposal
+                .tasks
+                .iter()
+                .any(|candidate| &candidate.id == dependency)
+            {
                 issues.push(validation_issue(
                     SpecValidationSeverity::Error,
                     "task.dependency_missing",
                     &format!("tasks.{}.depends_on", task.id),
-                    &format!("Task dependency {} does not exist in proposal tasks.", dependency),
+                    &format!(
+                        "Task dependency {} does not exist in proposal tasks.",
+                        dependency
+                    ),
                 ));
             }
         }
@@ -948,7 +1028,9 @@ pub fn validate_proposal_spec(project_root: &Path, proposal: &Proposal) -> Resul
     Ok(SpecValidationReport {
         schema_version: default_spec_schema_version(),
         proposal_id: proposal.id.clone(),
-        valid: !issues.iter().any(|issue| matches!(issue.severity, SpecValidationSeverity::Error)),
+        valid: !issues
+            .iter()
+            .any(|issue| matches!(issue.severity, SpecValidationSeverity::Error)),
         issues,
     })
 }
@@ -1077,7 +1159,11 @@ fn render_brainstorm_session_markdown(session: &BrainstormSession) -> String {
         output.push_str(&format!("### {}\n\n", question.question));
         output.push_str(&format!("- Rationale: {}\n", question.rationale));
         output.push_str(&format!("- Priority: {}\n", question.priority));
-        if let Some(answer) = session.answers.iter().find(|item| item.question_id == question.id) {
+        if let Some(answer) = session
+            .answers
+            .iter()
+            .find(|item| item.question_id == question.id)
+        {
             output.push_str(&format!("- Answer: {}\n\n", answer.answer));
         } else {
             output.push_str("- Answer: Pending\n\n");
@@ -1118,9 +1204,10 @@ fn answer_list_or_default(
 fn unresolved_questions(session: &BrainstormSession) -> Vec<String> {
     let mut pending = Vec::new();
     for question in &session.questions {
-        let answered = session.answers.iter().any(|answer| {
-            answer.question_id == question.id && !answer.answer.trim().is_empty()
-        });
+        let answered = session
+            .answers
+            .iter()
+            .any(|answer| answer.question_id == question.id && !answer.answer.trim().is_empty());
         if !answered {
             pending.push(question.question.clone());
         }
