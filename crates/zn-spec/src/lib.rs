@@ -1236,3 +1236,67 @@ fn split_multiline_answer(answer: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .collect()
 }
+
+// ==================== M10: Policy Integration ====================
+
+pub fn create_default_policy_engine() -> zn_types::PolicyEngine {
+    let mut engine = zn_types::PolicyEngine::default();
+    engine.rules.push(zn_types::PolicyRule {
+        id: "rule-read".to_string(), name: "Read Operations".to_string(),
+        action_pattern: "file.read".to_string(), risk_level: zn_types::ActionRiskLevel::Low,
+        default_decision: zn_types::PolicyDecision::Allow, conditions: vec![], exceptions: vec![],
+    });
+    engine.rules.push(zn_types::PolicyRule {
+        id: "rule-write".to_string(), name: "Write Operations".to_string(),
+        action_pattern: "file.write".to_string(), risk_level: zn_types::ActionRiskLevel::Medium,
+        default_decision: zn_types::PolicyDecision::Allow, conditions: vec!["worktree_isolated".to_string()], exceptions: vec![],
+    });
+    engine.rules.push(zn_types::PolicyRule {
+        id: "rule-merge".to_string(), name: "Merge Operations".to_string(),
+        action_pattern: "git.merge".to_string(), risk_level: zn_types::ActionRiskLevel::Critical,
+        default_decision: zn_types::PolicyDecision::Ask, conditions: vec!["tests_passed".to_string(), "review_approved".to_string()], exceptions: vec![],
+    });
+    engine
+}
+
+// ==================== M12: Skill Library ====================
+
+pub fn create_default_skill_library() -> zn_types::SkillLibrary {
+    let mut lib = zn_types::SkillLibrary::default();
+    lib.bundles.push(zn_types::SkillBundle {
+        id: "skill-brainstorm".to_string(), name: "Brainstorming".to_string(),
+        version: zn_types::SkillVersion { major: 1, minor: 0, patch: 0 },
+        description: "Socratic questioning for requirement clarification".to_string(),
+        applicable_scenarios: vec!["requirement_gathering".to_string()],
+        preconditions: vec!["user_goal_provided".to_string()], disabled_conditions: vec![],
+        risk_level: zn_types::ActionRiskLevel::Low, skill_chain: vec!["brainstorming".to_string()],
+        artifacts: vec!["brainstorm-session.md".to_string()], usage_count: 0, success_rate: 0.0,
+        created_at: Utc::now(), updated_at: Utc::now(),
+    });
+    lib.bundles.push(zn_types::SkillBundle {
+        id: "skill-tdd".to_string(), name: "Test-Driven Development".to_string(),
+        version: zn_types::SkillVersion { major: 1, minor: 0, patch: 0 },
+        description: "Test-first implementation cycle".to_string(),
+        applicable_scenarios: vec!["feature_implementation".to_string()],
+        preconditions: vec!["requirements_clear".to_string()], disabled_conditions: vec![],
+        risk_level: zn_types::ActionRiskLevel::Medium, skill_chain: vec!["test-driven-development".to_string()],
+        artifacts: vec![], usage_count: 0, success_rate: 0.0,
+        created_at: Utc::now(), updated_at: Utc::now(),
+    });
+    lib.active_bundle_ids = lib.bundles.iter().map(|b| b.id.clone()).collect();
+    lib
+}
+
+pub fn save_skill_library(project_root: &Path, library: &zn_types::SkillLibrary) -> Result<PathBuf> {
+    let path = zero_nine_dir(project_root).join("evolve/skill-library.json");
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    fs::write(&path, serde_json::to_vec_pretty(library)?)?;
+    Ok(path)
+}
+
+pub fn load_skill_library(project_root: &Path) -> Result<Option<zn_types::SkillLibrary>> {
+    let path = zero_nine_dir(project_root).join("evolve/skill-library.json");
+    if !path.exists() { return Ok(None); }
+    let data = fs::read_to_string(path)?;
+    Ok(Some(serde_json::from_str(&data)?))
+}
