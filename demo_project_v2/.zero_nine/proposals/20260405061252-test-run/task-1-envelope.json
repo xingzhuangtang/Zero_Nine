@@ -1,0 +1,28 @@
+{
+  "proposal_id": "20260405061252-test-run",
+  "task_id": "1",
+  "task_title": "Superpowers brainstorming to clarify requirement",
+  "execution_mode": "brainstorming",
+  "workspace_strategy": "in_place",
+  "context_files": [
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/proposal.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/requirements.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/acceptance.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/design.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/tasks.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/dag.json",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/progress.txt"
+  ],
+  "quality_gates": [
+    {
+      "name": "clarity",
+      "required": true,
+      "description": "The goal, scope, and acceptance criteria are explicit."
+    },
+    {
+      "name": "traceability",
+      "required": true,
+      "description": "The requirement packet can be mapped into spec artifacts without guesswork."
+    }
+  ]
+}

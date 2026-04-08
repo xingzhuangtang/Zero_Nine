@@ -1,0 +1,28 @@
+{
+  "proposal_id": "20260405090157-superpowers-brainstorming-openspec-ralph-loop-op",
+  "task_id": "4",
+  "task_title": "Execute guarded implementation verification and branch finishing",
+  "execution_mode": "subagent_dev",
+  "workspace_strategy": "git_worktree",
+  "context_files": [
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/proposal.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/requirements.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/acceptance.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/design.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/tasks.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/dag.json",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/progress.txt"
+  ],
+  "quality_gates": [
+    {
+      "name": "tests",
+      "required": true,
+      "description": "TDD or at least explicit test execution is required before completion."
+    },
+    {
+      "name": "review",
+      "required": true,
+      "description": "Implementation must be reviewable and ready for a reviewer brief."
+    }
+  ]
+}

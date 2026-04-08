@@ -1,0 +1,28 @@
+{
+  "proposal_id": "20260405061252-test-run",
+  "task_id": "4",
+  "task_title": "Execute guarded implementation verification and branch finishing",
+  "execution_mode": "subagent_dev",
+  "workspace_strategy": "git_worktree",
+  "context_files": [
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/proposal.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/requirements.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/acceptance.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/design.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/tasks.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/dag.json",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/progress.txt"
+  ],
+  "quality_gates": [
+    {
+      "name": "tests",
+      "required": true,
+      "description": "TDD or at least explicit test execution is required before completion."
+    },
+    {
+      "name": "review",
+      "required": true,
+      "description": "Implementation must be reviewable and ready for a reviewer brief."
+    }
+  ]
+}

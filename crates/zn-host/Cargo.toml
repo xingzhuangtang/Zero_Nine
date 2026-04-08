@@ -1,0 +1,11 @@
+[package]
+name = "zn-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Host adapters for Claude Code and OpenCode"
+
+[dependencies]
+anyhow.workspace = true
+zn-types = { path = "../zn-types" }

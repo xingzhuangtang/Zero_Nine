@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Node modules (in demo projects)
+**/node_modules/
+
+# Zero_Nine runtime data (demo projects only - these are execution state)
+demo_project/.zero_nine/
+demo_project_v2/.zero_nine/
+demo_project_v3/.zero_nine/
+
+# Demo project node_modules
+demo_project/node_modules/
+
+# Logs
+*.log

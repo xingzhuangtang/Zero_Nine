@@ -1,0 +1,12 @@
+{
+  "proposal_id": "20260405061252-test-run",
+  "completed": [
+    "1",
+    "2",
+    "3",
+    "4"
+  ],
+  "pending": [],
+  "blocked": [],
+  "summary": "4 completed, 0 pending, 0 blocked"
+}

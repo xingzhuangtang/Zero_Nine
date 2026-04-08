@@ -1,0 +1,38 @@
+{
+  "tasks": [
+    {
+      "id": "1",
+      "title": "Refine requirement and constraints",
+      "description": "Clarify user intent, scope, and acceptance criteria for: 为当前仓库设计一个统一的需求管理和执行调度流程",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "2",
+      "title": "Design spec and task graph",
+      "description": "Produce proposal, design notes, and a workable task graph.",
+      "status": "pending",
+      "depends_on": [
+        "1"
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Execute guarded implementation workflow",
+      "description": "Apply structured execution patterns with tests, reviews, and progress tracking.",
+      "status": "pending",
+      "depends_on": [
+        "2"
+      ]
+    },
+    {
+      "id": "4",
+      "title": "Verify result and evolve skills",
+      "description": "Summarize outcomes, score workflow quality, and propose improvement candidates.",
+      "status": "pending",
+      "depends_on": [
+        "3"
+      ]
+    }
+  ]
+}

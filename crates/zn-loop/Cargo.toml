@@ -1,0 +1,17 @@
+[package]
+name = "zn-loop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Long-running orchestration loop for Zero_Nine"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+zn-evolve = { path = "../zn-evolve" }
+zn-exec = { path = "../zn-exec" }
+zn-host = { path = "../zn-host" }
+zn-spec = { path = "../zn-spec" }
+zn-types = { path = "../zn-types" }

@@ -1,0 +1,28 @@
+{
+  "proposal_id": "20260405090157-superpowers-brainstorming-openspec-ralph-loop-op",
+  "task_id": "2",
+  "task_title": "Write OpenSpec proposal design tasks and DAG",
+  "execution_mode": "brainstorming",
+  "workspace_strategy": "in_place",
+  "context_files": [
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/proposal.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/requirements.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/acceptance.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/design.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/tasks.md",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/dag.json",
+    "./demo_project_v3/.zero_nine/proposals/20260405090157-superpowers-brainstorming-openspec-ralph-loop-op/progress.txt"
+  ],
+  "quality_gates": [
+    {
+      "name": "clarity",
+      "required": true,
+      "description": "The goal, scope, and acceptance criteria are explicit."
+    },
+    {
+      "name": "traceability",
+      "required": true,
+      "description": "The requirement packet can be mapped into spec artifacts without guesswork."
+    }
+  ]
+}

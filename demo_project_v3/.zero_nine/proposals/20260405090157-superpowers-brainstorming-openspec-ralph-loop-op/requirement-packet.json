@@ -1,0 +1,35 @@
+{
+  "user_goal": "把 Superpowers Brainstorming、OpenSpec、Ralph-loop、OpenSpace 串成可执行插件链路",
+  "problem_statement": "Transform the user request into a controllable engineering workflow that can start from one sentence and continue through spec, execution, loop orchestration, and evolution.",
+  "scope_in": [
+    "Capture the real user intent behind the initial goal.",
+    "Produce persistent specification artifacts for later execution.",
+    "Prepare a resumable loop with quality gates and progress tracking.",
+    "Export host-facing plugin entry points for Claude Code and OpenCode."
+  ],
+  "scope_out": [
+    "Do not assume cloud synchronization is already available.",
+    "Do not merge branches automatically without an explicit later confirmation step."
+  ],
+  "constraints": [
+    "Prefer plugin-first host integration while preserving a path toward an independent CLI and SDK.",
+    "Keep artifacts explicit, file-based, and inspectable by humans.",
+    "Preserve separation of concerns across spec, execution, loop, and evolution layers."
+  ],
+  "acceptance_criteria": [
+    "The requirement packet is explicit enough to drive planning without reinterpretation.",
+    "OpenSpec-style files exist and reflect the clarified goal.",
+    "Loop progress can be resumed from written state and progress files.",
+    "Host adapters expose slash-command entry points for Claude Code and OpenCode."
+  ],
+  "risks": [
+    "The initial user goal may still hide missing business context.",
+    "Execution can remain scaffold-like if plans are not further refined into actionable work units.",
+    "Without worktree isolation, implementation tasks may affect the main branch prematurely."
+  ],
+  "next_questions": [
+    "Should the first production implementation default to Git worktree for coding tasks?",
+    "What merge policy should finishing-a-development-branch enforce by default?",
+    "Which host should be treated as the primary runtime for the next iteration: Claude Code or OpenCode?"
+  ]
+}

@@ -1,0 +1,18 @@
+[package]
+name = "zn-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI for Zero_Nine"
+
+[[bin]]
+name = "zero-nine"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+zn-host = { path = "../zn-host" }
+zn-loop = { path = "../zn-loop" }
+zn-types = { path = "../zn-types" }

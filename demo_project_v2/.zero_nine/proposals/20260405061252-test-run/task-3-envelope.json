@@ -1,0 +1,28 @@
+{
+  "proposal_id": "20260405061252-test-run",
+  "task_id": "3",
+  "task_title": "Run writing-plans and prepare isolated execution workspace",
+  "execution_mode": "writing_plans",
+  "workspace_strategy": "git_worktree",
+  "context_files": [
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/proposal.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/requirements.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/acceptance.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/design.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/tasks.md",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/dag.json",
+    "./demo_project_v2/.zero_nine/proposals/20260405061252-test-run/progress.txt"
+  ],
+  "quality_gates": [
+    {
+      "name": "planning_quality",
+      "required": true,
+      "description": "The writing-plans output is actionable, bounded, and checkpointed."
+    },
+    {
+      "name": "workspace_readiness",
+      "required": true,
+      "description": "The task specifies how work will be isolated."
+    }
+  ]
+}

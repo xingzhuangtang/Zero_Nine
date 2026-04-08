@@ -1,0 +1,11 @@
+[package]
+name = "zn-evolve"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Evolution and scoring engine for Zero_Nine"
+
+[dependencies]
+chrono.workspace = true
+zn-types = { path = "../zn-types" }
