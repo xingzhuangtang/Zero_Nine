@@ -1300,3 +1300,38 @@ pub fn load_skill_library(project_root: &Path) -> Result<Option<zn_types::SkillL
     let data = fs::read_to_string(path)?;
     Ok(Some(serde_json::from_str(&data)?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_policy_engine_creation() {
+        let engine = create_default_policy_engine();
+        assert_eq!(engine.rules.len(), 3);
+        assert_eq!(engine.max_allowed_risk, zn_types::ActionRiskLevel::High);
+    }
+
+    #[test]
+    fn test_skill_library_creation() {
+        let library = create_default_skill_library();
+        assert!(library.bundles.len() >= 2);
+        assert!(!library.active_bundle_ids.is_empty());
+    }
+
+    #[test]
+    fn test_skill_library_save_load() {
+        use std::env::temp_dir;
+        let tmp_dir = temp_dir().join("zn_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        
+        let library = create_default_skill_library();
+        save_skill_library(&tmp_dir, &library).unwrap();
+        
+        let loaded = load_skill_library(&tmp_dir).unwrap().unwrap();
+        assert_eq!(loaded.bundles.len(), library.bundles.len());
+        
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+}
