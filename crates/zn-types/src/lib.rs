@@ -1599,15 +1599,18 @@ impl TaskGraph {
             }
         }
 
-        // Check for circular dependencies using DFS
-        let cycles = self.detect_cycles();
-        if !cycles.is_empty() {
-            let involved: Vec<String> = cycles.iter().flatten().cloned().collect();
-            errors.push(DagValidationError {
-                error_code: DagErrorCode::CircularDependency,
-                message: format!("Circular dependency detected: {}", cycles[0].join(" -> ")),
-                involved_task_ids: involved,
-            });
+        // Check for circular dependencies using Kahn's algorithm
+        // Only if no self-references or missing deps (those would cause issues)
+        if errors.is_empty() {
+            let cycles = self.detect_cycles();
+            if !cycles.is_empty() {
+                let involved: Vec<String> = cycles.iter().flatten().cloned().collect();
+                errors.push(DagValidationError {
+                    error_code: DagErrorCode::CircularDependency,
+                    message: format!("Circular dependency detected: {}", cycles[0].join(" -> ")),
+                    involved_task_ids: involved,
+                });
+            }
         }
 
         let critical_path = self.compute_critical_path();
@@ -1623,47 +1626,70 @@ impl TaskGraph {
     }
 
     fn detect_cycles(&self) -> Vec<Vec<String>> {
-        let mut cycles = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        let mut rec_stack = std::collections::HashSet::new();
-        let mut path = Vec::new();
+        // Use Kahn's algorithm for cycle detection
+        // If we can't process all nodes in topological order, there's a cycle
+        let mut in_degree: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut adj: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
+        // Initialize
         for task in &self.tasks {
-            if !visited.contains(&task.id) {
-                self.dfs_cycle_check(task, &mut visited, &mut rec_stack, &mut path, &mut cycles);
-            }
+            in_degree.entry(task.id.clone()).or_insert(0);
+            adj.entry(task.id.clone()).or_insert_with(Vec::new);
         }
 
-        cycles
-    }
-
-    fn dfs_cycle_check(
-        &self,
-        task: &TaskItem,
-        visited: &mut std::collections::HashSet<String>,
-        rec_stack: &mut std::collections::HashSet<String>,
-        path: &mut Vec<String>,
-        cycles: &mut Vec<Vec<String>>,
-    ) {
-        visited.insert(task.id.clone());
-        rec_stack.insert(task.id.clone());
-        path.push(task.id.clone());
-
-        for dep_id in &task.depends_on {
-            if !visited.contains(dep_id) {
-                if let Some(dep_task) = self.tasks.iter().find(|t| &t.id == dep_id) {
-                    self.dfs_cycle_check(dep_task, visited, rec_stack, path, cycles);
+        // Build adjacency (dependents point to their dependencies)
+        for task in &self.tasks {
+            for dep in &task.depends_on {
+                // Only count edges to existing tasks
+                if in_degree.contains_key(dep) {
+                    adj.entry(dep.clone())
+                        .or_insert_with(Vec::new)
+                        .push(task.id.clone());
+                    *in_degree.entry(task.id.clone()).or_insert(0) += 1;
                 }
-            } else if rec_stack.contains(dep_id) {
-                let cycle_start = path.iter().position(|x| x == dep_id).unwrap_or(0);
-                let mut cycle: Vec<String> = path[cycle_start..].to_vec();
-                cycle.push(dep_id.clone());
-                cycles.push(cycle);
             }
         }
 
-        path.pop();
-        rec_stack.remove(&task.id);
+        // Start with nodes that have no dependencies
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let mut processed = 0;
+
+        while let Some(node) = queue.pop() {
+            processed += 1;
+            if let Some(neighbors) = adj.get(&node) {
+                for neighbor in neighbors {
+                    if let Some(degree) = in_degree.get_mut(neighbor) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            queue.push(neighbor.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we couldn't process all nodes, there's a cycle
+        if processed != self.tasks.len() {
+            // Find nodes involved in cycle (those with non-zero in-degree)
+            let cycle_nodes: Vec<String> = in_degree
+                .iter()
+                .filter(|(_, &deg)| deg > 0)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            if !cycle_nodes.is_empty() {
+                return vec![cycle_nodes];
+            }
+        }
+
+        Vec::new()
     }
 
     fn compute_critical_path(&self) -> Vec<String> {
@@ -1742,41 +1768,281 @@ impl TaskGraph {
     }
 
     fn compute_max_depth(&self) -> u32 {
-        let mut depths: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-
-        fn compute_depth(
-            task_id: &str,
-            tasks: &[TaskItem],
-            depths: &mut std::collections::HashMap<String, u32>,
-        ) -> u32 {
-            if let Some(&d) = depths.get(task_id) {
-                return d;
-            }
-
-            let task = match tasks.iter().find(|t| &t.id == task_id) {
-                Some(t) => t,
-                None => return 0,
-            };
-
-            let depth = if task.depends_on.is_empty() {
-                1
-            } else {
-                task.depends_on
-                    .iter()
-                    .map(|dep| compute_depth(dep, tasks, depths))
-                    .max()
-                    .unwrap_or(0)
-                    + 1
-            };
-
-            depths.insert(task_id.to_string(), depth);
-            depth
+        if self.tasks.is_empty() {
+            return 0;
         }
 
-        self.tasks
+        // Use iterative approach with Kahn's algorithm
+        let mut in_degree: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut depth: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+        // Initialize
+        for task in &self.tasks {
+            in_degree.insert(task.id.clone(), task.depends_on.len());
+            depth.insert(task.id.clone(), 1);
+        }
+
+        let mut queue: Vec<String> = in_degree
             .iter()
-            .map(|t| compute_depth(&t.id, &self.tasks, &mut depths))
-            .max()
-            .unwrap_or(0)
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let mut max_depth = 0;
+
+        while let Some(task_id) = queue.pop() {
+            let current_depth = depth.get(&task_id).copied().unwrap_or(1);
+            max_depth = max_depth.max(current_depth);
+
+            for task in &self.tasks {
+                if task.depends_on.contains(&task_id) {
+                    let new_depth = current_depth + 1;
+                    if let Some(d) = depth.get_mut(&task.id) {
+                        *d = (*d).max(new_depth);
+                    }
+                    if let Some(deg) = in_degree.get_mut(&task.id) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push(task.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        max_depth
+    }
+}
+
+// ==================== Tests ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_dag_passes_validation() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-1".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Task 1".to_string(),
+                    description: "First task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "2".to_string(),
+                    title: "Task 2".to_string(),
+                    description: "Second task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["1".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+            ],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(result.valid);
+        assert!(result.errors.is_empty());
+        assert_eq!(result.max_depth, 2);
+    }
+
+    #[test]
+    fn test_circular_dependency_detected() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-2".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Task 1".to_string(),
+                    description: "First task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["3".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "2".to_string(),
+                    title: "Task 2".to_string(),
+                    description: "Second task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["1".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "3".to_string(),
+                    title: "Task 3".to_string(),
+                    description: "Third task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["2".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+            ],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e.error_code, DagErrorCode::CircularDependency)));
+    }
+
+    #[test]
+    fn test_missing_dependency_detected() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-3".to_string(),
+            tasks: vec![TaskItem {
+                id: "1".to_string(),
+                title: "Task 1".to_string(),
+                description: "First task".to_string(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["non-existent".to_string()],
+                kind: None,
+                contract: TaskContract::default(),
+            }],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e.error_code, DagErrorCode::MissingDependency)));
+    }
+
+    #[test]
+    fn test_self_reference_detected() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-4".to_string(),
+            tasks: vec![TaskItem {
+                id: "1".to_string(),
+                title: "Task 1".to_string(),
+                description: "First task".to_string(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["1".to_string()],
+                kind: None,
+                contract: TaskContract::default(),
+            }],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e.error_code, DagErrorCode::SelfReference)));
+    }
+
+    #[test]
+    fn test_empty_graph_detected() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-5".to_string(),
+            tasks: vec![],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e.error_code, DagErrorCode::EmptyTaskGraph)));
+    }
+
+    #[test]
+    fn test_duplicate_task_id_detected() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-6".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Task 1".to_string(),
+                    description: "First task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Duplicate Task".to_string(),
+                    description: "Duplicate task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+            ],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e.error_code, DagErrorCode::DuplicateTaskId)));
+    }
+
+    #[test]
+    fn test_critical_path_computation() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "test-7".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Task 1".to_string(),
+                    description: "First task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "2".to_string(),
+                    title: "Task 2".to_string(),
+                    description: "Second task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["1".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+                TaskItem {
+                    id: "3".to_string(),
+                    title: "Task 3".to_string(),
+                    description: "Third task".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["2".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                },
+            ],
+            edges: vec![],
+        };
+
+        let result = graph.validate_dag();
+        assert!(result.valid);
+        assert_eq!(result.critical_path, vec!["1", "2", "3"]);
+        assert_eq!(result.max_depth, 3);
     }
 }
