@@ -23,5 +23,20 @@ demo_project_v3/.zero_nine/
 # Demo project node_modules
 demo_project/node_modules/
 
+# AI indexing
+.ai-files/
+.ai-index
+
+# Security and secrets
+.env
+.env.*
+*.env
+credentials.json
+credentials.yaml
+*.pem
+*.key
+*.crt
+secrets/
+
 # Logs
 *.log
