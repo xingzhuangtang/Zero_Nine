@@ -68,8 +68,8 @@ pub fn start_brainstorm(goal: &str, host: HostKind) -> BrainstormSession {
         },
         ClarificationQuestion {
             id: "risks".to_string(),
-            question: "What major risks, ambiguities, or failure modes should the system track from the beginning?".to_string(),
-            rationale: "Known risks should be written into design and verification artifacts early instead of being rediscovered late.".to_string(),
+            question: "[中文] 系统应该从一开始就跟踪哪些主要风险、模糊点或失败模式？\n[English] What major risks, ambiguities, or failure modes should the system track from the beginning?".to_string(),
+            rationale: "[中文] 已知风险应该尽早写入设计和验证工件，而不是在后期重新发现。\n[English] Known risks should be written into design and verification artifacts early instead of being rediscovered late.".to_string(),
             priority: 70,
             answered: false,
         },
