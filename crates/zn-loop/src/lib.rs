@@ -1,9 +1,10 @@
+use rustyline::DefaultEditor;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
 use std::thread;
 use zn_evolve::{evaluate, propose_candidate};
@@ -432,14 +433,14 @@ fn has_bound_spec_contract(project_root: &Path, proposal_id: &str) -> Result<boo
 }
 
 fn run_terminal_brainstorm(project_root: &Path, session: &mut BrainstormSession) -> Result<()> {
+    let mut rl = DefaultEditor::new()?;
+    
     while let Some(question) = next_brainstorm_question(session) {
         println!("\n[Zero_Nine Brainstorming] {}", question.question);
         println!("Why this matters: {}", question.rationale);
-        print!("> ");
-        io::stdout().flush()?;
-
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
+        
+        let answer = rl.readline("> ")?;
+        rl.add_history_entry(&answer)?;
         let verdict = answer_brainstorm_question(session, &question.id, &answer)?;
         save_brainstorm_session(project_root, session)?;
         append_event(

@@ -10,6 +10,7 @@ description = "Long-running orchestration loop for Zero_Nine"
 anyhow.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+rustyline = "14"
 zn-evolve = { path = "../zn-evolve" }
 zn-exec = { path = "../zn-exec" }
 zn-host = { path = "../zn-host" }
