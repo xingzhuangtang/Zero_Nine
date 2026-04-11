@@ -40,3 +40,9 @@ secrets/
 
 # Logs
 *.log
+
+# Zero_Nine runtime data (demo projects)
+demo_project/.zero_nine/
+demo_project_v2/.zero_nine/
+demo_project_v3/.zero_nine/
+
