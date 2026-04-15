@@ -1,3 +1,8 @@
+pub mod skill_format;
+pub mod skill_manager;
+pub mod memory_tool;
+pub mod session_search;
+
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::json;
@@ -343,6 +348,11 @@ fn create_proposal_from_packet(
                 "next_questions": packet.next_questions.clone(),
                 "brainstorm_session_id": session.map(|item| item.id.clone()),
             })),
+            trace_id: None,
+            span_id: None,
+            parent_span_id: None,
+            latency_ms: None,
+            metadata: None,
         },
     )?;
     Ok(proposal)

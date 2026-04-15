@@ -12,7 +12,16 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+zn-bridge = { path = "../zn-bridge" }
+zn-evolve = { path = "../zn-evolve" }
+zn-exec = { path = "../zn-exec" }
 zn-host = { path = "../zn-host" }
 zn-loop = { path = "../zn-loop" }
+zn-spec = { path = "../zn-spec" }
 zn-types = { path = "../zn-types" }

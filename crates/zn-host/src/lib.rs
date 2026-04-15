@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use zn_types::HostKind;
 
+pub mod github;
+pub use github::{read_github_issues, create_pull_request, write_issue_comment, write_execution_summary};
+
 pub fn detect_host(explicit: Option<&str>) -> HostKind {
     match explicit.unwrap_or_default().to_lowercase().as_str() {
         "claude" | "claude-code" => HostKind::ClaudeCode,

@@ -1,0 +1,181 @@
+syntax = "proto3";
+package zero_nine.bridge.v1;
+
+// ============================================================================
+// Task Dispatch Service
+// ============================================================================
+
+service TaskDispatch {
+  // Dispatch a task to an agent for execution
+  rpc DispatchTask(DispatchRequest) returns (DispatchResponse);
+
+  // Cancel a running task
+  rpc CancelTask(CancelRequest) returns (CancelResponse);
+}
+
+message DispatchRequest {
+  string task_id = 1;
+  string proposal_id = 2;
+  string task_title = 3;
+  string task_description = 4;
+  repeated string context_files = 5;
+  ExecutionMode mode = 6;
+  WorkspaceStrategy workspace_strategy = 7;
+  repeated QualityGate quality_gates = 8;
+  string host_kind = 9;
+}
+
+message DispatchResponse {
+  string agent_task_id = 1;
+  DispatchStatus status = 2;
+  string message = 3;
+}
+
+message CancelRequest {
+  string task_id = 1;
+  string agent_task_id = 2;
+  string reason = 3;
+}
+
+message CancelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+enum DispatchStatus {
+  DISPATCH_STATUS_UNKNOWN = 0;
+  DISPATCH_STATUS_ACCEPTED = 1;
+  DISPATCH_STATUS_REJECTED = 2;
+  DISPATCH_STATUS_QUEUED = 3;
+}
+
+// ============================================================================
+// Task Status Service
+// ============================================================================
+
+service TaskStatus {
+  // Get current status of a dispatched task
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+
+  // Stream status updates for a task
+  rpc StreamStatus(StatusRequest) returns (stream StatusUpdate);
+}
+
+message StatusRequest {
+  string task_id = 1;
+  string agent_task_id = 2;
+}
+
+message StatusResponse {
+  string task_id = 1;
+  TaskState state = 2;
+  string summary = 3;
+  repeated string artifacts = 4;
+  int32 progress_percent = 5;
+  string error_message = 6;
+}
+
+message StatusUpdate {
+  TaskState state = 1;
+  string summary = 2;
+  int32 progress_percent = 3;
+  repeated string new_artifacts = 4;
+  int64 timestamp = 5;
+}
+
+enum TaskState {
+  TASK_STATE_UNKNOWN = 0;
+  TASK_STATE_QUEUED = 1;
+  TASK_STATE_RUNNING = 2;
+  TASK_STATE_COMPLETED = 3;
+  TASK_STATE_FAILED = 4;
+  TASK_STATE_CANCELLED = 5;
+}
+
+// ============================================================================
+// Evidence Stream Service
+// ============================================================================
+
+service EvidenceStream {
+  // Stream evidence records as they are generated
+  rpc StreamEvidence(EvidenceRequest) returns (stream EvidenceRecord);
+
+  // Submit final evidence when task completes
+  rpc SubmitEvidence(SubmitEvidenceRequest) returns (SubmitEvidenceResponse);
+}
+
+message EvidenceRequest {
+  string task_id = 1;
+  string agent_task_id = 2;
+}
+
+message EvidenceRecord {
+  string id = 1;
+  string kind = 2;
+  string content = 3;
+  string file_path = 4;
+  int64 timestamp = 5;
+  string task_id = 6;
+}
+
+message SubmitEvidenceRequest {
+  string task_id = 1;
+  string agent_task_id = 2;
+  repeated EvidenceRecord evidence = 3;
+  TaskState final_state = 4;
+  string summary = 5;
+}
+
+message SubmitEvidenceResponse {
+  bool success = 1;
+  repeated string evidence_paths = 2;
+  string message = 3;
+}
+
+// ============================================================================
+// Shared Enums (mirrored from zn-types)
+// ============================================================================
+
+enum ExecutionMode {
+  EXECUTION_MODE_UNKNOWN = 0;
+  EXECUTION_MODE_BRAINSTORMING = 1;
+  EXECUTION_MODE_SPEC_CAPTURE = 2;
+  EXECUTION_MODE_WRITING_PLANS = 3;
+  EXECUTION_MODE_WORKSPACE_PREPARE = 4;
+  EXECUTION_MODE_SUBAGENT_DEV = 5;
+  EXECUTION_MODE_SUBAGENT_REVIEW = 6;
+  EXECUTION_MODE_TDD_CYCLE = 7;
+  EXECUTION_MODE_VERIFICATION = 8;
+  EXECUTION_MODE_FINISH_BRANCH = 9;
+}
+
+enum WorkspaceStrategy {
+  WORKSPACE_STRATEGY_UNKNOWN = 0;
+  WORKSPACE_STRATEGY_IN_PLACE = 1;
+  WORKSPACE_STRATEGY_GIT_WORKTREE = 2;
+  WORKSPACE_STRATEGY_SANDBOXED = 3;
+}
+
+message QualityGate {
+  string name = 1;
+  bool required = 2;
+  string description = 3;
+}
+
+// ============================================================================
+// Host Adapter Service (optional, for remote host detection)
+// ============================================================================
+
+service HostAdapter {
+  // Detect available host
+  rpc DetectHost(DetectHostRequest) returns (DetectHostResponse);
+}
+
+message DetectHostRequest {
+  string explicit_hint = 1;
+}
+
+message DetectHostResponse {
+  string host_kind = 1;
+  bool available = 2;
+}

@@ -1,20 +1,29 @@
 [package]
-name = "zn-exec"
+name = "zn-bridge"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Execution policy engine for Zero_Nine"
+description = "gRPC bridge for Zero_Nine kernel to agent communication"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
+futures-core.workspace = true
+prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zn-types = { path = "../zn-types" }
-zn-bridge = { path = "../zn-bridge" }
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[dev-dependencies]
+tracing-subscriber = "0.3"

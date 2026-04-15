@@ -7,5 +7,9 @@ license.workspace = true
 description = "Evolution and scoring engine for Zero_Nine"
 
 [dependencies]
+anyhow.workspace = true
 chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 zn-types = { path = "../zn-types" }

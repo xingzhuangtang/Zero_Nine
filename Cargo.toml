@@ -7,6 +7,7 @@ members = [
   "crates/zn-evolve",
   "crates/zn-host",
   "crates/zn-cli",
+  "crates/zn-bridge",
 ]
 resolver = "2"
 
@@ -20,10 +21,18 @@ description = "Zero_Nine: a Rust orchestration core that unifies spec management
 
 [workspace.dependencies]
 anyhow = "1"
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
+futures-core = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "1"
+tonic = "0.12"
+tonic-build = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }

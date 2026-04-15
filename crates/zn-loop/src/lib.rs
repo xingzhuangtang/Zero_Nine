@@ -1,3 +1,5 @@
+pub mod cron_scheduler;
+
 use rustyline::DefaultEditor;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -33,13 +35,10 @@ pub fn initialize_project(project_root: &Path, host: HostKind) -> Result<()> {
     save_manifest(project_root, &manifest)?;
     append_event(
         project_root,
-        RuntimeEvent {
-            ts: Utc::now(),
-            event: "project.initialized".to_string(),
-            proposal_id: None,
-            task_id: None,
-            payload: Some(json!({"host": manifest.default_host.to_string()})),
-        },
+        RuntimeEvent::new(
+            "project.initialized".to_string(),
+            Some(json!({"host": manifest.default_host.to_string()})),
+        ),
     )?;
     Ok(())
 }
@@ -60,13 +59,10 @@ pub fn brainstorm(
         let session = start_brainstorm(goal, host.clone());
         append_event(
             project_root,
-            RuntimeEvent {
-                ts: Utc::now(),
-                event: "brainstorm.started".to_string(),
-                proposal_id: None,
-                task_id: None,
-                payload: Some(json!({"goal": goal, "session_id": session.id, "host": host.to_string()})),
-            },
+            RuntimeEvent::new(
+                "brainstorm.started".to_string(),
+                Some(json!({"goal": goal, "session_id": session.id, "host": host.to_string()})),
+            ),
         )?;
         session
     };
@@ -109,19 +105,16 @@ fn brainstorm_host_turn_internal(
                 save_brainstorm_session(project_root, &session)?;
                 append_event(
                     project_root,
-                    RuntimeEvent {
-                        ts: Utc::now(),
-                        event: "brainstorm.host_answered".to_string(),
-                        proposal_id: None,
-                        task_id: None,
-                        payload: Some(json!({
+                    RuntimeEvent::new(
+                        "brainstorm.host_answered".to_string(),
+                        Some(json!({
                             "session_id": session.id,
                             "host": host.to_string(),
                             "question_id": question.id,
                             "verdict": verdict,
                             "auto_continue_execution": auto_continue_execution,
                         })),
-                    },
+                    ),
                 )?;
 
                 if auto_continue_execution
@@ -154,13 +147,10 @@ fn brainstorm_host_turn_internal(
     let session = start_brainstorm(trimmed, host.clone());
     append_event(
         project_root,
-        RuntimeEvent {
-            ts: Utc::now(),
-            event: "brainstorm.host_started".to_string(),
-            proposal_id: None,
-            task_id: None,
-            payload: Some(json!({"goal": trimmed, "session_id": session.id, "host": host.to_string()})),
-        },
+        RuntimeEvent::new(
+            "brainstorm.host_started".to_string(),
+            Some(json!({"goal": trimmed, "session_id": session.id, "host": host.to_string()})),
+        ),
     )?;
     save_brainstorm_session(project_root, &session)?;
     render_host_brainstorm_status(
@@ -445,17 +435,14 @@ fn run_terminal_brainstorm(project_root: &Path, session: &mut BrainstormSession)
         save_brainstorm_session(project_root, session)?;
         append_event(
             project_root,
-            RuntimeEvent {
-                ts: Utc::now(),
-                event: "brainstorm.answered".to_string(),
-                proposal_id: None,
-                task_id: None,
-                payload: Some(json!({
+            RuntimeEvent::new(
+                "brainstorm.answered".to_string(),
+                Some(json!({
                     "session_id": session.id,
                     "question_id": question.id,
                     "verdict": verdict,
                 })),
-            },
+            ),
         )?;
     }
     Ok(())
@@ -465,17 +452,14 @@ fn finalize_brainstorm(project_root: &Path, session: &BrainstormSession) -> Resu
     save_brainstorm_session(project_root, session)?;
     append_event(
         project_root,
-        RuntimeEvent {
-            ts: Utc::now(),
-            event: "brainstorm.finalized".to_string(),
-            proposal_id: None,
-            task_id: None,
-            payload: Some(json!({
+        RuntimeEvent::new(
+            "brainstorm.finalized".to_string(),
+            Some(json!({
                 "session_id": session.id,
                 "goal": session.goal,
                 "verdict": session.verdict,
             })),
-        },
+        ),
     )?;
 
     if matches!(session.verdict, BrainstormVerdict::Ready) {
@@ -605,12 +589,9 @@ fn execute_proposal(
 
             append_event(
                 project_root,
-                RuntimeEvent {
-                    ts: Utc::now(),
-                    event: "task.started".to_string(),
-                    proposal_id: Some(proposal.id.clone()),
-                    task_id: Some(runtime.task.id.clone()),
-                    payload: Some(json!({
+                RuntimeEvent::new(
+                    "task.started".to_string(),
+                    Some(json!({
                         "title": runtime.task.title,
                         "execution_mode": envelope.execution_mode,
                         "workspace_strategy": envelope.workspace_strategy,
@@ -625,7 +606,8 @@ fn execute_proposal(
                         "scheduler_runnable_tasks": schedule.runnable_tasks,
                         "batch_execution": true,
                     })),
-                },
+                )
+                .with_context(Some(proposal.id.clone()), Some(runtime.task.id.clone())),
             )?;
         }
 
@@ -731,12 +713,9 @@ fn execute_proposal(
 
             append_event(
                 project_root,
-                RuntimeEvent {
-                    ts: Utc::now(),
-                    event: event_name,
-                    proposal_id: Some(proposal.id.clone()),
-                    task_id: Some(report.task_id.clone()),
-                    payload: Some(json!({
+                RuntimeEvent::new(
+                    event_name,
+                    Some(json!({
                         "exit_code": report.exit_code,
                         "outcome": report.outcome,
                         "failure_summary": report.failure_summary,
@@ -757,7 +736,8 @@ fn execute_proposal(
                         "max_retries": max_retries,
                         "batch_execution": true,
                     })),
-                },
+                )
+                .with_context(Some(proposal.id.clone()), Some(report.task_id.clone())),
             )?;
         }
 
@@ -801,13 +781,11 @@ fn execute_proposal(
 
         append_event(
             project_root,
-            RuntimeEvent {
-                ts: Utc::now(),
-                event: "proposal.completed".to_string(),
-                proposal_id: Some(proposal.id.clone()),
-                task_id: None,
-                payload: Some(json!({"goal": goal, "iterations": state.iteration})),
-            },
+            RuntimeEvent::new(
+                "proposal.completed".to_string(),
+                Some(json!({"goal": goal, "iterations": state.iteration})),
+            )
+            .with_context(Some(proposal.id.clone()), None),
         )?;
 
         let summary = status_summary(project_root)?;
@@ -817,18 +795,16 @@ fn execute_proposal(
     } else {
         append_event(
             project_root,
-            RuntimeEvent {
-                ts: Utc::now(),
-                event: "proposal.paused".to_string(),
-                proposal_id: Some(proposal.id.clone()),
-                task_id: None,
-                payload: Some(json!({
+            RuntimeEvent::new(
+                "proposal.paused".to_string(),
+                Some(json!({
                     "goal": goal,
                     "iterations": state.iteration,
                     "retry_count": state.retry_count,
                     "reason": halt_reason,
                 })),
-            },
+            )
+            .with_context(Some(proposal.id.clone()), None),
         )?;
 
         let summary = status_summary(project_root)?;

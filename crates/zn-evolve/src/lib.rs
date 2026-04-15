@@ -4,6 +4,14 @@ use zn_types::{
     SkillEvaluation, VerdictStatus,
 };
 
+// Re-export scorer module
+pub mod scorer;
+pub use scorer::SkillScorer;
+
+// Re-export distiller module
+pub mod distiller;
+pub use distiller::SkillDistiller;
+
 pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
     let collected_required = report
         .evidence

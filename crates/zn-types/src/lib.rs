@@ -1414,6 +1414,102 @@ pub struct RuntimeEvent {
     pub proposal_id: Option<String>,
     pub task_id: Option<String>,
     pub payload: Option<Value>,
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    #[serde(default)]
+    pub span_id: Option<String>,
+    #[serde(default)]
+    pub parent_span_id: Option<String>,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Map<String, Value>>,
+}
+
+impl RuntimeEvent {
+    /// Create a new RuntimeEvent with minimal fields
+    pub fn new(event: String, payload: Option<Value>) -> Self {
+        Self {
+            ts: Utc::now(),
+            event,
+            proposal_id: None,
+            task_id: None,
+            payload,
+            trace_id: None,
+            span_id: None,
+            parent_span_id: None,
+            latency_ms: None,
+            metadata: None,
+        }
+    }
+
+    /// Set proposal and task context
+    pub fn with_context(mut self, proposal_id: Option<String>, task_id: Option<String>) -> Self {
+        self.proposal_id = proposal_id;
+        self.task_id = task_id;
+        self
+    }
+
+    /// Set trace context
+    pub fn with_trace(mut self, trace_id: Option<String>, span_id: Option<String>, parent_span_id: Option<String>) -> Self {
+        self.trace_id = trace_id;
+        self.span_id = span_id;
+        self.parent_span_id = parent_span_id;
+        self
+    }
+}
+
+/// Trace context for cross-cutting observability (Layer 13)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceContext {
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_span_id: Option<String>,
+    #[serde(default)]
+    pub attributes: std::collections::HashMap<String, String>,
+}
+
+impl TraceContext {
+    pub fn new() -> Self {
+        let uuid = format!("{}", uuid::Uuid::new_v4().simple());
+        Self {
+            trace_id: uuid.clone(),
+            span_id: format!("{}-001", &uuid[..8]),
+            parent_span_id: None,
+            attributes: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn child(&self, span_suffix: &str) -> Self {
+        Self {
+            trace_id: self.trace_id.clone(),
+            span_id: format!("{}-{}", &self.span_id[..8], span_suffix),
+            parent_span_id: Some(self.span_id.clone()),
+            attributes: self.attributes.clone(),
+        }
+    }
+}
+
+impl Default for TraceContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Metrics snapshot for aggregation
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsSnapshot {
+    pub task_id: String,
+    pub proposal_id: Option<String>,
+    pub start_ts: DateTime<Utc>,
+    pub end_ts: Option<DateTime<Utc>>,
+    pub latency_ms: u64,
+    pub token_usage: u64,
+    pub subagent_count: u32,
+    pub evidence_count: u32,
+    pub success: bool,
+    #[serde(default)]
+    pub custom_metrics: std::collections::HashMap<String, Value>,
 }
 
 pub fn default_spec_schema_version() -> String {

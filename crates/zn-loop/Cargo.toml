@@ -9,7 +9,9 @@ description = "Long-running orchestration loop for Zero_Nine"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 rustyline = "14"
 zn-evolve = { path = "../zn-evolve" }
 zn-exec = { path = "../zn-exec" }

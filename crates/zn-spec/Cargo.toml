@@ -9,5 +9,8 @@ description = "Spec and artifact management for Zero_Nine"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+rusqlite = { version = "0.31", features = ["bundled", "functions"] }
+serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 zn-types = { path = "../zn-types" }
