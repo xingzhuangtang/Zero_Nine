@@ -1,8 +1,17 @@
+//! Zero_Nine Execution Layer
+//!
+//! This crate provides:
+//! - Task execution planning
+//! - Workspace preparation (git worktree, etc.)
+//! - Execution report generation
+//! - gRPC bridge client for agent dispatch
+
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::info;
 use uuid::Uuid;
 use zn_types::{
     AgentRunRecord, BrainstormSession, BrainstormVerdict, BranchFinishPreview,
@@ -17,6 +26,25 @@ use zn_types::{
     WorkspacePreparationResult, WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy,
     WorktreePlan,
 };
+
+// Bridge client module for gRPC agent communication
+pub mod bridge_client;
+
+/// Layer 13: Cross-Cutting Observability
+pub mod observability;
+pub use observability::{EventEmitter, MetricsAggregator, EventQuery, create_default_observability};
+pub use zn_types::TraceContext;
+
+// Subagent dispatcher module
+pub mod subagent_dispatcher;
+
+// Governance module
+pub mod governance;
+
+// Re-export proto types for convenience
+pub use zn_bridge::proto;
+pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, create_dispatcher};
+pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -586,12 +614,83 @@ struct CommandOutcome {
 }
 
 fn run_shell_command(project_root: &Path, command: &str, context: &str) -> Result<CommandOutcome> {
-    let output = Command::new("sh")
-        .arg("-lc")
-        .arg(command)
-        .current_dir(project_root)
+    // 安全修复：不再使用 sh -lc 执行用户控制的命令
+    // 将命令解析为程序名和参数，使用直接执行方式
+
+    // 处理包含 shell 操作符的复杂命令（&&, ||, ;, |）
+    // 这些操作符需要 shell 来解释，但我们要限制命令范围
+    let needs_shell = command.contains("&&") || command.contains("||") || command.contains(';') || command.contains('|');
+
+    if needs_shell {
+        // 对于包含 shell 操作符的命令，使用更安全的 sh -c 方式（不是 -lc，避免加载 profile）
+        // 并且仍然使用白名单验证第一个命令
+        let first_cmd = command.split_whitespace().next().unwrap_or("");
+        if !ALLOWED_COMMANDS.contains(&first_cmd) {
+            return Err(anyhow::anyhow!(
+                "命令 '{}' 不在允许列表中。允许的命令：{}",
+                first_cmd,
+                ALLOWED_COMMANDS.join(", ")
+            ));
+        }
+
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(project_root)
+            .output()
+            .with_context(|| format!("{} - 执行命令：{}", context, command))?;
+
+        return Ok(CommandOutcome {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    // 简单命令：直接解析并执行
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(anyhow::anyhow!("空命令"));
+    }
+
+    // 允许的命令白名单
+    const ALLOWED_COMMANDS: &[&str] = &[
+        "cargo", "npm", "yarn", "pnpm", "bun", "node",
+        "git", "go", "python", "python3", "pip", "pip3",
+        "bundle", "rake", "mix", "elixir", "rustc",
+        "make", "cmake", "bash", "sh", "zsh",
+        "ls", "cat", "grep", "find", "head", "tail",
+        "jq", "sed", "awk", "diff", "patch",
+        "docker", "docker-compose",
+        "printf", "echo", "touch", "mkdir", "rm", "cp", "mv",
+        "pwd", "whoami", "hostname", "uname", "date", "sleep",
+        "true", "false", "test",
+    ];
+
+    let program = parts[0];
+
+    // 检查命令是否在白名单中
+    if !ALLOWED_COMMANDS.contains(&program) {
+        return Err(anyhow::anyhow!(
+            "命令 '{}' 不在允许列表中。允许的命令：{}",
+            program,
+            ALLOWED_COMMANDS.join(", ")
+        ));
+    }
+
+    // 使用直接执行方式，避免 shell 注入
+    let mut cmd = Command::new(program);
+    cmd.current_dir(project_root);
+
+    // 添加剩余参数（跳过第一个程序名）
+    for arg in parts.iter().skip(1) {
+        cmd.arg(*arg);
+    }
+
+    let output = cmd
         .output()
-        .with_context(|| context.to_string())?;
+        .with_context(|| format!("{} - 执行命令：{}", context, command))?;
+
     Ok(CommandOutcome {
         exit_code: output.status.code().unwrap_or(1),
         stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
@@ -2771,6 +2870,181 @@ fn to_checkbox_list(items: &[impl AsRef<str>]) -> String {
         .map(|item| format!("- [ ] {}", item.as_ref()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// ============================================================================
+// gRPC Bridge Execution Functions
+// ============================================================================
+
+/// Execute a plan by dispatching the task to an agent via gRPC bridge.
+///
+/// This function:
+/// 1. Connects to the gRPC bridge server
+/// 2. Dispatches the task to an agent
+/// 3. Waits for the agent to complete the task
+/// 4. Collects evidence and builds an ExecutionReport
+///
+/// # Arguments
+///
+/// * `project_root` - Root path of the project
+/// * `task` - The task to execute
+/// * `plan` - The execution plan
+/// * `bridge_addr` - Address of the gRPC bridge server
+/// * `timeout_secs` - Timeout in seconds for task completion
+///
+/// # Returns
+///
+/// An `ExecutionReport` containing the agent's results
+pub async fn execute_plan_with_bridge(
+    project_root: &Path,
+    task: &TaskItem,
+    plan: &ExecutionPlan,
+    bridge_addr: std::net::SocketAddr,
+    timeout_secs: u64,
+) -> Result<ExecutionReport> {
+    use bridge_client::BridgeClient;
+
+    info!("Connecting to gRPC bridge server at {}", bridge_addr);
+
+    // Connect to the bridge server
+    let mut client = BridgeClient::connect(bridge_addr)
+        .await
+        .context("failed to connect to gRPC bridge server")?;
+
+    // Collect context files from the plan (use empty for now as ExecutionPlan doesn't have context_injection)
+    let context_files = Vec::new();
+
+    // Dispatch the task to an agent
+    info!("Dispatching task {} to agent", task.id);
+    let agent_task_id = client.dispatch_task(task, &plan.task_id, plan, context_files)
+        .await
+        .context("failed to dispatch task to agent")?;
+
+    info!("Task {} dispatched to agent as {}", task.id, agent_task_id);
+
+    // Wait for task completion
+    info!("Waiting for task {} to complete (timeout: {}s)", task.id, timeout_secs);
+    let task_result = client.wait_for_task(&task.id, &agent_task_id, timeout_secs)
+        .await
+        .context("failed to wait for task completion")?;
+
+    // Collect evidence
+    let evidence_records = client.collect_evidence(&task.id, &agent_task_id)
+        .await
+        .context("failed to collect evidence")?;
+
+    // Build the execution report from the agent's results
+    build_report_from_agent_result(
+        project_root,
+        task,
+        plan,
+        task_result,
+        evidence_records,
+    )
+}
+
+/// Build an ExecutionReport from agent results
+fn build_report_from_agent_result(
+    _project_root: &Path,
+    task: &TaskItem,
+    plan: &ExecutionPlan,
+    task_result: bridge_client::TaskResult,
+    evidence_records: Vec<proto::EvidenceRecord>,
+) -> Result<ExecutionReport> {
+    use bridge_client::{task_state_is_success, task_state_is_failure};
+
+    let success = task_state_is_success(task_result.state);
+    let outcome = if success {
+        zn_types::ExecutionOutcome::Completed
+    } else if task_state_is_failure(task_result.state) {
+        zn_types::ExecutionOutcome::Escalated
+    } else {
+        zn_types::ExecutionOutcome::RetryableFailure
+    };
+
+    // Convert proto evidence records to zn_types EvidenceRecord
+    let evidence: Vec<EvidenceRecord> = evidence_records
+        .iter()
+        .map(|e| {
+            let kind = zn_types::EvidenceKind::GeneratedArtifact; // Default kind
+            EvidenceRecord {
+                key: e.id.clone(),
+                label: e.kind.clone(),
+                kind,
+                status: if e.file_path.is_empty() {
+                    zn_types::EvidenceStatus::Missing
+                } else {
+                    zn_types::EvidenceStatus::Collected
+                },
+                required: true,
+                summary: format!("Evidence {}: {}", e.id, e.kind),
+                path: if e.file_path.is_empty() { None } else { Some(e.file_path.clone()) },
+            }
+        })
+        .collect();
+
+    // Build artifacts list from task result and evidence
+    let mut artifacts = task_result.artifacts.clone();
+    artifacts.extend(
+        evidence_records
+            .iter()
+            .filter(|e| !e.file_path.is_empty())
+            .map(|e| e.file_path.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // Build details from task result summary
+    let details = vec![
+        format!("Agent task ID: {}", task_result.task_id),
+        format!("Final state: {} (enum value)", task_result.state),
+        format!("Summary: {}", task_result.summary),
+    ];
+
+    // Determine test/review pass status based on task state
+    let tests_passed = success;
+    let review_passed = success;
+
+    // Build failure summary if needed
+    let failure_summary = if success {
+        None
+    } else {
+        Some(format!("Task {} failed: {}", task.id, task_result.summary))
+    };
+
+    let exit_code = if success { 0 } else { 1 };
+
+    info!(
+        "Built execution report for task {}: success={}, outcome={:?}",
+        task.id, success, outcome
+    );
+
+    Ok(ExecutionReport {
+        task_id: task.id.clone(),
+        success,
+        outcome,
+        summary: task_result.summary,
+        details,
+        tests_passed,
+        review_passed,
+        artifacts,
+        generated_artifacts: Vec::new(),
+        evidence,
+        follow_ups: if !success {
+            vec!["Review agent output and evidence files for failure analysis.".to_string()]
+        } else {
+            Vec::new()
+        },
+        workspace_record: None,
+        finish_branch_result: None,
+        finish_branch_automation: plan.finish_branch_automation.clone(),
+        agent_runs: Vec::new(),
+        review_verdict: None,
+        verification_verdict: None,
+        verification_actions: plan.verification_actions.clone(),
+        verification_action_results: Vec::new(),
+        failure_summary,
+        exit_code,
+    })
 }
 
 #[cfg(test)]
