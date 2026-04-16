@@ -499,6 +499,160 @@ Idle
 
 ## 常见问题
 
+### Q: `init`、`--host`、`export` 都是什么意思？它们有什么区别？
+
+<details>
+<summary>📘 通俗比喻版（开餐厅）</summary>
+
+想象 Zero_Nine 是一个**餐厅管理系统**，你要开一家餐厅。
+
+| 命令/参数 | 类比 | 实际作用 |
+|-----------|------|----------|
+| `init` | 租店面、搞装修 | 创建 `.zero_nine/` 工作目录 |
+| `--host` | 选美团还是饿了么 | 指定用哪个 AI 宿主 |
+| `export` | 把菜单上架到外卖平台 | 复制适配文件到 `.claude/commands/` |
+
+**详细解释：**
+
+1. **`init` - 租店面装修**
+   ```bash
+   zero-nine init --host claude-code
+   ```
+   就像租店面、搞装修：把空房子变成能开店的状态，准备好厨房、仓库、收银台。
+
+2. **`--host` - 选外卖平台**
+   ```bash
+   --host claude-code    # 选美团
+   --host opencode       # 选饿了么
+   --host terminal       # 只做堂食，不上外卖
+   ```
+   就是告诉系统：我主要通过哪个渠道接单。
+
+3. **`export` - 上架外卖平台**
+   ```bash
+   zero-nine export --project .
+   ```
+   就像把菜单放到外卖平台上：美团/饿了么的骑手才能看到你的店，顾客才能在 App 里点你的菜。
+
+**为什么 `--host` 和 `export` 要分开？**
+
+因为这是两步独立的事：
+- `--host` = 在后台注册"我要做美团外卖"（保存到配置文件）
+- `export` = 实际把菜单上传到美团 App（物理复制文件）
+
+你注册了美团（`--host`），但不上传菜单（`export`），顾客还是看不到你的店。
+
+**一句话总结：**
+```
+init  = 准备好自己的店
+--host = 选哪个平台接单
+export = 把店上架到平台
+```
+
+</details>
+
+<details>
+<summary>🔧 技术详解版</summary>
+
+#### 1. `init` 的目的是什么？
+
+**作用**：初始化项目的 `.zero_nine/` 工作目录结构。
+
+```bash
+zero-nine init --project . --host claude-code
+```
+
+执行后会创建：
+- `.zero_nine/manifest.json` - 项目配置文件
+- `.zero_nine/proposals/` - 提案目录
+- `.zero_nine/brainstorm/` - 头脑风暴会话目录
+- `.zero_nine/runtime/` - 运行时事件日志目录
+
+**类比**：就像 `git init` 初始化 `.git/` 目录一样。
+
+---
+
+#### 2. `--host` 的目的是什么？
+
+**作用**：指定宿主环境（AI 助手平台）。
+
+支持的值：
+- `claude-code` - Claude Code CLI
+- `opencode` - OpenCode CLI  
+- `terminal` - 纯终端模式（无宿主）
+
+**为什么需要**：Zero_Nine 本身是 Rust 内核，但需要通过宿主适配器来与 AI 助手通信。`--host` 决定：
+1. 生成哪个宿主适配文件
+2. 使用哪种宿主特定的命令格式
+
+---
+
+#### 3. `export` 和 `init` 有什么区别？
+
+| 命令 | 作用 | 输出内容 |
+|------|------|----------|
+| `init` | 初始化**运行时目录** | `.zero_nine/manifest.json`, `proposals/`, `runtime/` 等 |
+| `export` | 导出**宿主适配文件** | `adapters/claude-code/.claude/commands/` 等 |
+
+---
+
+#### 4. `export` 的目的是什么？
+
+**作用**：将宿主适配文件复制到项目目录中，使宿主（Claude Code/OpenCode）能够发现并加载 Zero_Nine 技能。
+
+```bash
+zero-nine export --project .
+```
+
+导出内容示例：
+```
+adapters/claude-code/
+└── .claude/
+    ├── commands/zero-nine.md      # /zero-nine 斜杠命令
+    └── skills/zero-nine-orchestrator/SKILL.md  # 编排器技能
+```
+
+---
+
+#### 5. `export` 和 `cp -r` 有什么区别？
+
+| 方面 | `zero-nine export` | `cp -r` |
+|------|-------------------|---------|
+| 智能处理 | 根据 `--host` 选择正确的适配器 | 机械复制所有文件 |
+| 模板渲染 | 会填充项目路径等动态内容 | 原样复制 |
+| 验证 | 检查适配文件是否存在 | 不检查 |
+| 更新逻辑 | 只复制必要的文件 | 全部覆盖 |
+
+**简单说**：`export` 是"智能复制"，会根据配置选择正确的文件并可能做模板渲染；`cp -r` 是无脑全量复制。
+
+---
+
+#### 6. 不是已经用 `--host` 指定了吗？为什么还要 `export`？
+
+这是两个**不同阶段**的操作：
+
+| 阶段 | 命令 | 作用 | 何时使用 |
+|------|------|------|----------|
+| **阶段 1** | `init --host claude-code` | 在 `.zero_nine/manifest.json` 中**记录**宿主类型 | 初始化项目时 |
+| **阶段 2** | `export --project .` | 将适配文件**物理复制**到项目目录 | 需要在宿主中使用时 |
+
+**典型工作流**：
+```bash
+# 1. 初始化（记录宿主配置）
+zero-nine init --project . --host claude-code
+
+# 2. 导出适配文件（让 Claude Code 能发现技能）
+zero-nine export --project .
+
+# 3. 在 Claude Code 中使用
+claude
+/zero-nine 添加搜索功能
+```
+
+</details>
+
+---
+
 ### Q: `--project .` 中的点是什么意思？
 
 **A:** `.` 表示当前目录，是 Unix/Linux 路径约定的标准写法。`..` 表示父目录。
