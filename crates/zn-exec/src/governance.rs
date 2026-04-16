@@ -5,6 +5,7 @@
 //! - Approval tickets for high-risk actions
 //! - Policy engine for governance decisions
 //! - Audit logging for compliance
+//! - Token budget management
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -16,6 +17,29 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 use zn_types::Policy;
 use uuid::Uuid;
+
+// Re-export token counter types
+use crate::token_counter::TokenBudget;
+
+/// Token budget check result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenBudgetCheck {
+    pub allowed: bool,
+    pub requires_confirmation: bool,
+    pub blocked: bool,
+    pub remaining_tokens: u64,
+    pub usage_percent: f64,
+}
+
+/// Token budget status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenBudgetStatus {
+    pub max_tokens: u64,
+    pub used_tokens: u64,
+    pub remaining_tokens: u64,
+    pub usage_percent: f64,
+    pub is_near_limit: bool,
+}
 
 /// Risk level for actions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -299,6 +323,8 @@ pub struct PolicyEngine {
     matrix: AuthorizationMatrix,
     policy: Policy,
     tickets_path: PathBuf,
+    /// Token budget for tracking usage
+    pub token_budget: TokenBudget,
 }
 
 impl PolicyEngine {
@@ -316,7 +342,15 @@ impl PolicyEngine {
             matrix: AuthorizationMatrix::default(),
             policy,
             tickets_path,
+            token_budget: TokenBudget::default(),
         })
+    }
+
+    /// Create a new policy engine with custom token budget
+    pub fn with_token_budget(project_root: &Path, max_tokens: u64) -> Result<Self> {
+        let mut engine = Self::new(project_root)?;
+        engine.token_budget = TokenBudget::new(max_tokens);
+        Ok(engine)
     }
 
     /// Check if an action is allowed
@@ -341,6 +375,40 @@ impl PolicyEngine {
             blocked: matches!(authorization, AuthorizationRequirement::Blocked { .. }),
             risk_level,
             authorization,
+        }
+    }
+
+    /// Check if adding tokens would exceed budget
+    pub fn check_token_budget(&self, tokens: u64) -> TokenBudgetCheck {
+        let can_add = self.token_budget.can_add(tokens);
+        let is_near_limit = self.token_budget.is_near_limit();
+        let remaining = self.token_budget.remaining();
+        let usage_percent = self.token_budget.usage_percent();
+
+        TokenBudgetCheck {
+            allowed: can_add,
+            requires_confirmation: is_near_limit,
+            blocked: !can_add,
+            remaining_tokens: remaining,
+            usage_percent,
+        }
+    }
+
+    /// Record token usage
+    pub fn record_token_usage(&mut self, tokens: u64) {
+        self.token_budget.add(tokens);
+        info!("Recorded token usage: {} tokens (total: {}, remaining: {})",
+            tokens, self.token_budget.used_tokens, self.token_budget.remaining());
+    }
+
+    /// Get current token budget status
+    pub fn get_token_status(&self) -> TokenBudgetStatus {
+        TokenBudgetStatus {
+            max_tokens: self.token_budget.max_tokens,
+            used_tokens: self.token_budget.used_tokens,
+            remaining_tokens: self.token_budget.remaining(),
+            usage_percent: self.token_budget.usage_percent(),
+            is_near_limit: self.token_budget.is_near_limit(),
         }
     }
 

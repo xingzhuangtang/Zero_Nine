@@ -41,10 +41,14 @@ pub mod subagent_dispatcher;
 // Governance module
 pub mod governance;
 
+// Token counter and output optimizer
+pub mod token_counter;
+pub use token_counter::{TokenCounter, OutputOptimizer, TokenBudget};
+
 // Re-export proto types for convenience
 pub use zn_bridge::proto;
 pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, create_dispatcher};
-pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket};
+pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket, TokenBudgetCheck, TokenBudgetStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -640,10 +644,14 @@ fn run_shell_command(project_root: &Path, command: &str, context: &str) -> Resul
             .output()
             .with_context(|| format!("{} - 执行命令：{}", context, command))?;
 
+        // Token 优化：过滤和截断输出
+        let stdout = optimize_output_for_tokens(&String::from_utf8_lossy(&output.stdout));
+        let stderr = optimize_output_for_tokens(&String::from_utf8_lossy(&output.stderr));
+
         return Ok(CommandOutcome {
             exit_code: output.status.code().unwrap_or(1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stdout,
+            stderr,
         });
     }
 
@@ -691,11 +699,22 @@ fn run_shell_command(project_root: &Path, command: &str, context: &str) -> Resul
         .output()
         .with_context(|| format!("{} - 执行命令：{}", context, command))?;
 
+    // Token 优化：过滤和截断输出
+    let stdout = optimize_output_for_tokens(&String::from_utf8_lossy(&output.stdout));
+    let stderr = optimize_output_for_tokens(&String::from_utf8_lossy(&output.stderr));
+
     Ok(CommandOutcome {
         exit_code: output.status.code().unwrap_or(1),
-        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        stdout,
+        stderr,
     })
+}
+
+/// 优化输出以减少 Token 使用
+/// 默认配置：最大 200 行，10000 字符，启用智能过滤
+fn optimize_output_for_tokens(output: &str) -> String {
+    let optimizer = OutputOptimizer::default();
+    optimizer.optimize(output)
 }
 
 fn context_protocol_for(
