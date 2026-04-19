@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1329,6 +1330,18 @@ pub struct ExecutionReport {
     pub verification_action_results: Vec<VerificationActionResult>,
     pub failure_summary: Option<String>,
     pub exit_code: i32,
+    // Reward model fields (added in v1.1)
+    #[serde(default)]
+    pub execution_time_ms: u64,
+    #[serde(default)]
+    pub token_count: u64,
+    #[serde(default)]
+    pub code_quality_score: f32,
+    #[serde(default)]
+    pub test_coverage: f32,
+    // User feedback (added in v1.1)
+    #[serde(default)]
+    pub user_feedback: Option<UserFeedback>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1379,6 +1392,39 @@ pub struct SkillEvaluation {
     pub token_cost: u64,
     pub score: f32,
     pub notes: String,
+}
+
+/// User feedback for a task execution (added in v1.1)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFeedback {
+    pub task_id: String,
+    pub rating: u8, // 1-5
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub preferred_aspects: Vec<String>,
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
+}
+
+impl Default for UserFeedback {
+    fn default() -> Self {
+        Self {
+            task_id: String::new(),
+            rating: 3,
+            comment: None,
+            preferred_aspects: Vec::new(),
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+/// User feedback summary (added in v1.1)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFeedbackSummary {
+    pub total_feedback: u32,
+    pub avg_rating: f32,
+    pub common_positive_aspects: Vec<String>,
+    pub common_negative_aspects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2227,6 +2273,343 @@ impl Default for AgentRole { fn default() -> Self { Self::Executor } }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiAgentOrchestration { pub proposal_id: String, pub dispatches: Vec<SubagentDispatch>, #[serde(default)] pub coordination_log: Vec<String>, #[serde(default)] pub conflict_resolutions: Vec<String> }
 impl Default for MultiAgentOrchestration { fn default() -> Self { Self { proposal_id: String::new(), dispatches: Vec::new(), coordination_log: Vec::new(), conflict_resolutions: Vec::new() } } }
+
+// ==================== Karpathy-Inspired Evolution Types ====================
+
+/// Evidence with weight and credibility
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightedEvidence {
+    /// Evidence content
+    pub content: String,
+    /// Weight: how strong this evidence is (0-1)
+    pub weight: f32,
+    /// Credibility: source reliability (0-1)
+    pub credibility: f32,
+    /// Timestamp
+    pub timestamp: DateTime<Utc>,
+}
+
+impl WeightedEvidence {
+    pub fn new(content: &str, weight: f32, credibility: f32) -> Self {
+        Self {
+            content: content.to_string(),
+            weight,
+            credibility,
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Get adjusted weight (weight * credibility)
+    pub fn adjusted_weight(&self) -> f32 {
+        self.weight * self.credibility
+    }
+}
+
+/// BeliefState - 在线信念状态，替代固定的 Proposal
+/// 信念随循环更新，不是固定的 spec
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeliefState {
+    /// 当前目标
+    pub goal: String,
+    /// 当前假设（我们正在验证的理论）
+    pub current_hypothesis: String,
+    /// 置信度 0-1
+    pub confidence: f32,
+    /// 支持证据（带权重）
+    #[serde(default)]
+    pub evidence_for: Vec<WeightedEvidence>,
+    /// 反对证据（带权重）
+    #[serde(default)]
+    pub evidence_against: Vec<WeightedEvidence>,
+    /// 未解问题
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    /// 下一个验证实验
+    #[serde(default)]
+    pub next_experiment: String,
+    /// 创建时间
+    #[serde(default)]
+    pub created_at: DateTime<Utc>,
+    /// 更新时间
+    #[serde(default)]
+    pub updated_at: DateTime<Utc>,
+    /// 置信度历史（用于趋势分析）
+    #[serde(default)]
+    pub confidence_history: Vec<f32>,
+    /// 假设历史（用于追踪演化）
+    #[serde(default)]
+    pub hypothesis_history: Vec<String>,
+}
+
+impl Default for BeliefState {
+    fn default() -> Self {
+        Self {
+            goal: String::new(),
+            current_hypothesis: String::new(),
+            confidence: 0.5,
+            evidence_for: Vec::new(),
+            evidence_against: Vec::new(),
+            open_questions: Vec::new(),
+            next_experiment: String::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            confidence_history: Vec::new(),
+            hypothesis_history: Vec::new(),
+        }
+    }
+}
+
+impl BeliefState {
+    /// 更新信念状态
+    pub fn update(&mut self, success: bool, evidence: &str, new_confidence: Option<f32>) {
+        self.updated_at = Utc::now();
+
+        // Create weighted evidence
+        let weight = if success { 0.7 } else { 0.5 };
+        let credibility = 0.8;
+        let weighted_evidence = WeightedEvidence::new(evidence, weight, credibility);
+
+        if success {
+            self.evidence_for.push(weighted_evidence);
+            self.confidence = (self.confidence * 0.9 + 0.9 * 0.1).min(0.99);
+        } else {
+            self.evidence_against.push(weighted_evidence);
+            self.confidence = (self.confidence * 0.8).max(0.1);
+        }
+
+        if let Some(conf) = new_confidence {
+            self.confidence = conf.clamp(0.1, 0.99);
+        }
+    }
+
+    /// 添加未解问题
+    pub fn add_question(&mut self, question: String) {
+        if !self.open_questions.contains(&question) {
+            self.open_questions.push(question);
+        }
+    }
+
+    /// 移除已解答的问题
+    pub fn resolve_question(&mut self, question: &str) {
+        self.open_questions.retain(|q| q != question);
+    }
+}
+
+/// 多维度奖励模型（类似 RLHF）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiDimensionalReward {
+    /// 代码质量 (0-1)
+    pub code_quality: f32,
+    /// 测试覆盖率 (0-1)
+    pub test_coverage: f32,
+    /// 用户满意度 (0-1) - 显式反馈
+    pub user_satisfaction: f32,
+    /// 执行速度 (0-1) - 归一化
+    pub execution_speed: f32,
+    /// Token 效率 (0-1)
+    pub token_efficiency: f32,
+    /// 学习到的权重
+    #[serde(default)]
+    pub learned_weights: HashMap<String, f32>,
+    /// 对比数据（用于 RLHF）
+    #[serde(default)]
+    pub pairwise_comparisons: Vec<PairwiseComparison>,
+}
+
+impl Default for MultiDimensionalReward {
+    fn default() -> Self {
+        Self {
+            code_quality: 0.5,
+            test_coverage: 0.5,
+            user_satisfaction: 0.5,
+            execution_speed: 0.5,
+            token_efficiency: 0.5,
+            learned_weights: HashMap::new(),
+            pairwise_comparisons: Vec::new(),
+        }
+    }
+}
+
+impl MultiDimensionalReward {
+    /// 计算加权奖励
+    pub fn weighted_reward(&self) -> f32 {
+        let weights = &self.learned_weights;
+        let default_weight = 0.2; // 均匀权重
+
+        let w_code = *weights.get("code_quality").unwrap_or(&default_weight);
+        let w_test = *weights.get("test_coverage").unwrap_or(&default_weight);
+        let w_user = *weights.get("user_satisfaction").unwrap_or(&default_weight);
+        let w_speed = *weights.get("execution_speed").unwrap_or(&default_weight);
+        let w_token = *weights.get("token_efficiency").unwrap_or(&default_weight);
+
+        self.code_quality * w_code +
+        self.test_coverage * w_test +
+        self.user_satisfaction * w_user +
+        self.execution_speed * w_speed +
+        self.token_efficiency * w_token
+    }
+
+    /// 记录对比数据
+    pub fn record_comparison(&mut self, comparison: PairwiseComparison) {
+        self.pairwise_comparisons.push(comparison);
+        self.update_weights_from_comparisons();
+    }
+
+    /// 从对比数据学习权重
+    fn update_weights_from_comparisons(&mut self) {
+        if self.pairwise_comparisons.is_empty() {
+            return;
+        }
+
+        // 简单实现：统计用户偏好的特征
+        let mut preference_counts: HashMap<String, u32> = HashMap::new();
+        for comp in &self.pairwise_comparisons {
+            if let Some(pref) = &comp.preferred_reason {
+                *preference_counts.entry(pref.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // 归一化为权重
+        let total: u32 = preference_counts.values().sum();
+        if total > 0 {
+            for (key, count) in preference_counts {
+                self.learned_weights.insert(key, count as f32 / total as f32);
+            }
+        }
+    }
+}
+
+/// 对比数据记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairwiseComparison {
+    /// 任务 ID
+    pub task_id: String,
+    /// 选项 A 描述
+    pub option_a: String,
+    /// 选项 B 描述
+    pub option_b: String,
+    /// 选择的选项 ("A" 或 "B")
+    pub chosen: String,
+    /// 选择原因
+    #[serde(default)]
+    pub preferred_reason: Option<String>,
+    /// 时间戳
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
+}
+
+impl Default for PairwiseComparison {
+    fn default() -> Self {
+        Self {
+            task_id: String::new(),
+            option_a: String::new(),
+            option_b: String::new(),
+            chosen: "A".to_string(),
+            preferred_reason: None,
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+/// 课程学习系统
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Curriculum {
+    /// 任务难度评估
+    #[serde(default)]
+    pub task_difficulty: HashMap<String, f32>,
+    /// 技能 prerequisites
+    #[serde(default)]
+    pub skill_prerequisites: HashMap<String, Vec<String>>,
+    /// 技能掌握程度 (0-1)
+    #[serde(default)]
+    pub mastery_level: HashMap<String, f32>,
+    /// 当前难度级别
+    #[serde(default)]
+    pub current_difficulty: f32,
+    /// 成功率历史
+    #[serde(default)]
+    pub success_history: Vec<f32>,
+}
+
+impl Default for Curriculum {
+    fn default() -> Self {
+        Self {
+            task_difficulty: HashMap::new(),
+            skill_prerequisites: HashMap::new(),
+            mastery_level: HashMap::new(),
+            current_difficulty: 0.5,
+            success_history: Vec::new(),
+        }
+    }
+}
+
+impl Curriculum {
+    /// 评估任务难度
+    pub fn evaluate_task_difficulty(&mut self, task_id: &str, complexity: f32) -> f32 {
+        let difficulty = complexity.clamp(0.1, 0.9);
+        self.task_difficulty.insert(task_id.to_string(), difficulty);
+        difficulty
+    }
+
+    /// 记录任务完成
+    pub fn record_completion(&mut self, task_id: &str, success: bool) {
+        let _difficulty = self.task_difficulty.get(task_id).copied().unwrap_or(0.5);
+        let success_rate = if success { 1.0 } else { 0.0 };
+
+        self.success_history.push(success_rate);
+        if self.success_history.len() > 10 {
+            self.success_history.remove(0);
+        }
+
+        // 更新掌握程度
+        let mastery = self.mastery_level.entry(task_id.to_string()).or_insert(0.5);
+        *mastery = (*mastery * 0.8 + success_rate * 0.2).clamp(0.0, 1.0);
+
+        // 动态调整难度
+        self.adapt_difficulty();
+    }
+
+    /// 动态调整难度
+    pub fn adapt_difficulty(&mut self) {
+        if self.success_history.len() < 3 {
+            return;
+        }
+
+        let recent_avg: f32 = self.success_history.iter().sum::<f32>() / self.success_history.len() as f32;
+
+        // 成功率高则提高难度，低则降低
+        if recent_avg > 0.8 {
+            self.current_difficulty = (self.current_difficulty + 0.1).min(0.9);
+        } else if recent_avg < 0.4 {
+            self.current_difficulty = (self.current_difficulty - 0.1).max(0.1);
+        }
+    }
+
+    /// 获取技能掌握程度
+    pub fn get_mastery(&self, skill_id: &str) -> f32 {
+        *self.mastery_level.get(skill_id).unwrap_or(&0.0)
+    }
+
+    /// 检查 prerequisites 是否满足
+    pub fn check_prerequisites(&self, skill_id: &str) -> bool {
+        let prereqs = self.skill_prerequisites.get(skill_id);
+        match prereqs {
+            None => true,
+            Some(reqs) => reqs.iter().all(|req| {
+                self.mastery_level.get(req).copied().unwrap_or(0.0) >= 0.7
+            }),
+        }
+    }
+
+    /// 添加技能 prerequisite
+    pub fn add_prerequisite(&mut self, skill_id: &str, prerequisite: &str) {
+        self.skill_prerequisites
+            .entry(skill_id.to_string())
+            .or_insert_with(Vec::new)
+            .push(prerequisite.to_string());
+    }
+}
+
 
 // ==================== Tests for M2-M12 Types ====================
 

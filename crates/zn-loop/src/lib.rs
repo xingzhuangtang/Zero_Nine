@@ -9,7 +9,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::thread;
-use zn_evolve::{evaluate, propose_candidate};
+use tracing::info;
+use zn_evolve::{evaluate, propose_candidate, RewardModel};
 use zn_exec::{
     answer_brainstorm_question, build_execution_envelope, build_plan, execute_plan,
     next_brainstorm_question, prepare_workspace, start_brainstorm,
@@ -704,6 +705,21 @@ fn execute_proposal(
                 .open(project_root.join(".zero_nine/evolve/evaluations.jsonl"))?;
             writeln!(evals, "{}", serde_json::to_string(&evaluation)?)?;
 
+            // Update reward model from execution report
+            let reward_result = (|| -> Result<()> {
+                let mut reward_model = RewardModel::new(
+                    project_root.join(".zero_nine/evolve/pairwise_comparisons.ndjson")
+                )?;
+                reward_model.record_from_report(&report);
+                reward_model.save()?;
+                Ok(())
+            })();
+
+            if let Err(e) = reward_result {
+                // Log error but don't fail the execution
+                info!("Reward model update failed: {}", e);
+            }
+
             if let Some(candidate) = propose_candidate(&report) {
                 let path = project_root
                     .join(".zero_nine/evolve/candidates")
@@ -988,6 +1004,11 @@ fn infrastructure_failure_report(
         verification_action_results: vec![],
         failure_summary: Some(failure_summary),
         exit_code: 1,
+        execution_time_ms: 0,
+        token_count: 0,
+        code_quality_score: 0.0,
+        test_coverage: 0.0,
+        user_feedback: None,
     }
 }
 

@@ -17,7 +17,9 @@
       "Bash(git add:*)",
       "Bash(git commit -m 'docs: 更新 README 融合架构说明和使用手册:*)",
       "Bash(git push:*)",
-      "Bash(git commit -m 'chore: 删除废弃的 demo_project_v3 目录:*)"
+      "Bash(git commit -m 'chore: 删除废弃的 demo_project_v3 目录:*)",
+      "Bash(npx skills:*)",
+      "Bash(cargo clippy:*)"
     ]
   }
 }

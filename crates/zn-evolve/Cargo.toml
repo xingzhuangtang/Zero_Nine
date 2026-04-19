@@ -12,4 +12,8 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+reqwest = { version = "0.11", features = ["json"] }
 zn-types = { path = "../zn-types" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

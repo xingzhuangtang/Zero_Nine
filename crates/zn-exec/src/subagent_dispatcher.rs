@@ -5,6 +5,7 @@
 //! - Context preparation for each role
 //! - Result collection and aggregation
 //! - Recovery ledger for interrupted dispatches
+//! - Actual subagent execution via Claude Code CLI
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tracing::info;
 use zn_types::{
     SubagentBrief, SubagentDispatch, SubagentRecoveryRecord, SubagentRecoveryLedger,
@@ -261,6 +263,124 @@ zero-nine subagent-dispatch \
             dispatch.role,
             dispatch.context_files.join(","),
         )
+    }
+
+    /// Execute a subagent dispatch using Claude Code CLI
+    /// This is the actual implementation that calls external AI
+    pub fn execute_dispatch(&self, dispatch: &SubagentDispatch) -> Result<DispatchResult> {
+        info!("Executing subagent dispatch for role: {}", dispatch.role);
+
+        // Prepare the prompt for the subagent
+        let prompt = self.build_subagent_prompt(dispatch);
+
+        // Build the Claude Code command
+        // Uses 'claude' CLI with the prepared context
+        let mut cmd = Command::new("claude");
+        cmd.arg("--verbose")
+            .arg("--prompt")
+            .arg(&prompt);
+
+        // Add context files as additional context
+        let context_dir = self
+            .project_root
+            .join(".zero_nine/runtime/subagents/context")
+            .join(&self.task_id)
+            .join(&dispatch.role);
+
+        if context_dir.exists() {
+            // Add context by reading files and appending to prompt
+            for entry in fs::read_dir(&context_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "md") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        cmd.arg("--context").arg(&content);
+                    }
+                }
+            }
+        }
+
+        // Execute the command
+        let output = cmd.output();
+
+        match output {
+            Ok(output) => {
+                let success = output.status.success();
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                // Parse output files from the response
+                let output_files = self.extract_output_files(&stdout);
+
+                Ok(DispatchResult {
+                    role: dispatch.role.clone(),
+                    success,
+                    output_files,
+                    error: if success { None } else { Some(stderr) },
+                    raw_output: Some(stdout),
+                })
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to execute subagent: {}", e)),
+        }
+    }
+
+    /// Build a prompt for subagent execution
+    fn build_subagent_prompt(&self, dispatch: &SubagentDispatch) -> String {
+        format!(
+            r#"# Subagent Task
+
+## Role: {}
+## Objective: Execute the assigned task as a {} agent
+
+## Context Files: {:?}
+## Expected Outputs: {:?}
+
+## Instructions
+You are acting as a {} subagent in the Zero_Nine orchestration system.
+Your task is to: {}
+
+Please complete the task and produce the expected outputs: {:?}
+
+## Command Hint
+{}
+
+## Execution Protocol
+1. Read all context files carefully
+2. Understand the task objective
+3. Execute the required actions
+4. Produce the expected output files
+5. Report success or failure with evidence
+"#,
+            dispatch.role,
+            dispatch.role,
+            dispatch.context_files,
+            dispatch.expected_outputs,
+            dispatch.role,
+            dispatch.role,
+            dispatch.expected_outputs,
+            dispatch.command_hint,
+        )
+    }
+
+    /// Extract output file paths from subagent response
+    fn extract_output_files(&self, output: &str) -> Vec<String> {
+        // Simple heuristic: look for file paths in the output
+        // In production, this would parse a structured response
+        let mut files = Vec::new();
+
+        for line in output.lines() {
+            if line.contains("Created:") || line.contains("Wrote:") || line.contains("Saved:") {
+                // Extract path after the keyword
+                if let Some(idx) = line.find(':') {
+                    let path = line[idx + 1..].trim();
+                    if !path.is_empty() {
+                        files.push(path.to_string());
+                    }
+                }
+            }
+        }
+
+        files
     }
 }
 

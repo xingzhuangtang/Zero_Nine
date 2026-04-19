@@ -1,8 +1,5 @@
 use chrono::Utc;
-use zn_types::{
-    EvidenceStatus, EvolutionCandidate, EvolutionKind, ExecutionOutcome, ExecutionReport,
-    SkillEvaluation, VerdictStatus,
-};
+use zn_types::{EvidenceStatus, EvolutionCandidate, EvolutionKind, ExecutionOutcome, ExecutionReport, SkillEvaluation, VerdictStatus};
 
 // Re-export scorer module
 pub mod scorer;
@@ -11,6 +8,29 @@ pub use scorer::SkillScorer;
 // Re-export distiller module
 pub mod distiller;
 pub use distiller::SkillDistiller;
+
+// Re-export reward model module
+pub mod reward;
+pub use reward::{RewardModel, RewardBreakdown};
+
+// Re-export curriculum module
+pub mod curriculum;
+pub use curriculum::{CurriculumManager, CurriculumStats, OptimalTaskRecommendation};
+
+// Re-export belief module
+pub mod belief;
+pub use belief::{BeliefTracker, BeliefDecision, RecommendedAction};
+
+// Integration engine - 三系统联动
+pub mod integration_engine;
+pub use integration_engine::{IntegrationEngine, IntegratedDecision, EngineSnapshot, DecisionReasoning};
+
+// AI Client - 外部 AI API 客户端
+pub mod ai_client;
+pub use ai_client::{
+    AIClient, AIClientConfig, AIProvider, AIRequest, AIResponse, AIMessage, MessageRole, TokenUsage,
+    UserFeedbackCollector, UserFeedbackEntry, FeedbackStats, create_feedback_collector,
+};
 
 pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
     let collected_required = report

@@ -15,7 +15,8 @@
 # Node modules (in demo projects)
 **/node_modules/
 
-# Zero_Nine runtime data (demo projects only - these are execution state)
+# Zero_Nine runtime data (all projects - contains execution state, rewards, beliefs, feedback)
+.zero_nine/
 demo_project/.zero_nine/
 demo_project_v2/.zero_nine/
 demo_project_v3/.zero_nine/
@@ -40,9 +41,3 @@ secrets/
 
 # Logs
 *.log
-
-# Zero_Nine runtime data (demo projects)
-demo_project/.zero_nine/
-demo_project_v2/.zero_nine/
-demo_project_v3/.zero_nine/
-

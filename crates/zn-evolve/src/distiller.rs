@@ -702,6 +702,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         let patterns = extractor.extract_from_report(&report);
@@ -760,6 +765,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         // Run distillation twice to build frequency
@@ -805,6 +815,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         // WorkspacePreparation
@@ -916,6 +931,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         // Extract 3 times
@@ -975,6 +995,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         // Failure pattern should have lower confidence
@@ -1000,6 +1025,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: Some("Error".to_string()),
             exit_code: 1,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         extractor.extract_from_report(&success_report);
@@ -1061,6 +1091,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         // Run distillation - patterns will be extracted and merged internally
@@ -1129,6 +1164,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         let _ = distiller.distill_from_report(&report).unwrap();
@@ -1216,6 +1256,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
 
         let _ = distiller.distill_from_report(&report).unwrap();
@@ -1277,6 +1322,11 @@ mod tests {
             verification_action_results: vec![],
             failure_summary: None,
             exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
         };
         extractor.extract_from_report(&report);
         extractor.save().unwrap();
