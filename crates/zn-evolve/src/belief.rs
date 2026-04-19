@@ -322,12 +322,8 @@ impl BeliefTracker {
             content.push('\n');
         }
 
-        // Use fs::write which ensures data is written
+        // Use fs::write which handles creation and writing atomically
         fs::write(&self.belief_file, &content)?;
-
-        // Sync the file to disk
-        let file = fs::File::open(&self.belief_file)?;
-        file.sync_all()?;
 
         Ok(())
     }

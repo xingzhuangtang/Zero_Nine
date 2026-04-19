@@ -780,7 +780,7 @@ mod tests {
         let skills = distiller.get_all_skills();
         // Just check that we have skills, regardless of frequency threshold for distillation
         // (The distiller internally merges, so we should have at least one entry)
-        let _ = skills.len(); // Acknowledge skills variable
+        let _skills = distiller.get_all_skills(); // may be empty due to frequency threshold in distillation
 
         let _ = fs::remove_file(&tmp_file);
     }

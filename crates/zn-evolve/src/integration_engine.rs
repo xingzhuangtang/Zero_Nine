@@ -125,12 +125,7 @@ impl IntegrationEngine {
         })
     }
 
-    /// 创建默认引擎
-    pub fn create_default(project_root: &Path) -> Result<Self> {
-        Self::new(project_root)
-    }
-
-    /// 记录执行结果并更新所有三个系统
+    /// Record execution results and update all three systems
     pub fn record_execution(
         &mut self,
         task_id: &str,
@@ -359,7 +354,7 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Create engine
-        let mut engine = IntegrationEngine::create_default(&tmp_dir).unwrap();
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
 
         // Record some executions
         let report1 = create_mock_report("task-1", true);
@@ -385,7 +380,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut engine = IntegrationEngine::create_default(&tmp_dir).unwrap();
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
 
         // Create conflicting state: high confidence but low quality
         let report = create_mock_report("task-1", true);
