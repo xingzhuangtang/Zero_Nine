@@ -56,6 +56,29 @@ pub struct SubagentContext {
     pub objective: String,
 }
 
+/// Check if the Claude CLI is available on PATH
+pub fn is_claude_available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// Report from batch subagent execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentExecutionReport {
+    /// Individual dispatch results
+    pub results: Vec<DispatchResult>,
+    /// Whether all dispatches succeeded
+    pub all_succeeded: bool,
+    /// Total number of dispatches
+    pub total: usize,
+    /// Number of successful dispatches
+    pub succeeded: usize,
+    /// Number of failed dispatches
+    pub failed: usize,
+}
+
 impl SubagentDispatcher {
     /// Create a new subagent dispatcher
     pub fn new(project_root: &Path, proposal_id: &str, task_id: &str) -> Result<Self> {
@@ -243,6 +266,73 @@ impl SubagentDispatcher {
         })
     }
 
+    /// Aggregate results from a list of dispatch results (for testing and direct use)
+    pub fn aggregate_results_from_list(&self, results: &[DispatchResult]) -> AggregatedResults {
+        let mut outputs = HashMap::new();
+        let mut evidence_files = Vec::new();
+        let mut errors = Vec::new();
+
+        for result in results {
+            if result.success {
+                outputs.insert(
+                    result.role.clone(),
+                    result.raw_output.clone().unwrap_or_default(),
+                );
+                evidence_files.extend(result.output_files.clone());
+            } else {
+                if let Some(err) = &result.error {
+                    errors.push(format!("{}: {}", result.role, err));
+                }
+            }
+        }
+
+        AggregatedResults {
+            task_id: self.task_id.clone(),
+            outputs,
+            evidence_files,
+            errors: errors.clone(),
+            all_success: errors.is_empty(),
+        }
+    }
+
+    /// Execute all dispatches sequentially, individual failures don't stop the overall run
+    pub fn try_execute_all(&mut self, runbook: &SubagentRunBook) -> SubagentExecutionReport {
+        let mut results = Vec::new();
+
+        for dispatch in &runbook.dispatches {
+            match self.execute_dispatch(dispatch) {
+                Ok(result) => {
+                    // Record to recovery ledger regardless of outcome
+                    let _ = self.record_dispatch(&result);
+                    results.push(result);
+                }
+                Err(e) => {
+                    let error_result = DispatchResult {
+                        role: dispatch.role.clone(),
+                        success: false,
+                        output_files: Vec::new(),
+                        error: Some(e.to_string()),
+                        raw_output: None,
+                    };
+                    let _ = self.record_dispatch(&error_result);
+                    results.push(error_result);
+                }
+            }
+        }
+
+        let succeeded = results.iter().filter(|r| r.success).count();
+        let total = results.len();
+        let failed = total - succeeded;
+
+        SubagentExecutionReport {
+            results,
+            all_succeeded: failed == 0,
+            total,
+            succeeded,
+            failed,
+        }
+    }
+
     /// Generate dispatch command for external agent
     pub fn generate_dispatch_command(&self, dispatch: &SubagentDispatch) -> String {
         format!(
@@ -402,6 +492,51 @@ pub struct AggregatedResults {
     pub all_success: bool,
 }
 
+/// Verdict from tri-role workflow (developer/reviewer/verifier)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriRoleVerdict {
+    /// All three roles passed successfully
+    Pass,
+    /// Developer failed to produce implementation
+    DevelopmentFailed,
+    /// Reviewer rejected the implementation
+    ReviewRejected,
+    /// Verifier found acceptance criteria not met
+    VerificationFailed,
+}
+
+/// Compute tri-role verdict from dispatch results
+pub fn compute_tri_role_verdict(results: &[DispatchResult]) -> TriRoleVerdict {
+    if results.is_empty() {
+        return TriRoleVerdict::DevelopmentFailed;
+    }
+
+    // Check developer result
+    if let Some(dev_result) = results.iter().find(|r| r.role == "developer") {
+        if !dev_result.success {
+            return TriRoleVerdict::DevelopmentFailed;
+        }
+    } else {
+        return TriRoleVerdict::DevelopmentFailed;
+    }
+
+    // Check reviewer result (if present)
+    if let Some(review_result) = results.iter().find(|r| r.role == "reviewer") {
+        if !review_result.success {
+            return TriRoleVerdict::ReviewRejected;
+        }
+    }
+
+    // Check verifier result (if present)
+    if let Some(verify_result) = results.iter().find(|r| r.role == "verifier") {
+        if !verify_result.success {
+            return TriRoleVerdict::VerificationFailed;
+        }
+    }
+
+    TriRoleVerdict::Pass
+}
+
 /// Create default subagent dispatcher
 pub fn create_dispatcher(project_root: &Path, proposal_id: &str, task_id: &str) -> Result<SubagentDispatcher> {
     SubagentDispatcher::new(project_root, proposal_id, task_id)
@@ -508,5 +643,229 @@ mod tests {
         assert_eq!(ledger.records[0].role, "developer");
 
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_tri_role_workflow_lifecycle() {
+        let tmp_dir = temp_dir().join("subagent_tri_role_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+
+        let briefs = vec![
+            SubagentBrief {
+                role: "developer".to_string(),
+                goal: "Implement feature".to_string(),
+                inputs: vec!["design.md".to_string()],
+                outputs: vec!["implementation.diff".to_string()],
+            },
+            SubagentBrief {
+                role: "reviewer".to_string(),
+                goal: "Review implementation".to_string(),
+                inputs: vec!["implementation.diff".to_string()],
+                outputs: vec!["review-verdict.md".to_string()],
+            },
+            SubagentBrief {
+                role: "verifier".to_string(),
+                goal: "Verify acceptance criteria".to_string(),
+                inputs: vec!["review-verdict.md".to_string()],
+                outputs: vec!["verification-report.md".to_string()],
+            },
+        ];
+
+        let runbook = dispatcher.create_runbook(&briefs, "Test tri-role workflow");
+        assert_eq!(runbook.dispatches.len(), 3);
+        assert_eq!(runbook.dispatches[0].role, "developer");
+        assert_eq!(runbook.dispatches[1].role, "reviewer");
+        assert_eq!(runbook.dispatches[2].role, "verifier");
+
+        let runbook_path = dispatcher.save_runbook(&runbook).unwrap();
+        assert!(Path::new(&runbook_path).exists());
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_aggregate_results_all_success() {
+        let tmp_dir = temp_dir().join("subagent_aggregate_success_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: true,
+                output_files: vec!["code.diff".to_string()],
+                error: None,
+                raw_output: Some("Implementation complete".to_string()),
+            },
+            DispatchResult {
+                role: "reviewer".to_string(),
+                success: true,
+                output_files: vec!["review.md".to_string()],
+                error: None,
+                raw_output: Some("Review passed".to_string()),
+            },
+            DispatchResult {
+                role: "verifier".to_string(),
+                success: true,
+                output_files: vec!["verification.md".to_string()],
+                error: None,
+                raw_output: Some("Verification passed".to_string()),
+            },
+        ];
+
+        for result in &results {
+            dispatcher.record_dispatch(result).unwrap();
+        }
+
+        let ledger = dispatcher.load_recovery_ledger().unwrap();
+        assert_eq!(ledger.records.len(), 3);
+
+        let aggregated = dispatcher.aggregate_results_from_list(&results);
+        assert!(aggregated.all_success);
+        assert_eq!(aggregated.outputs.len(), 3);
+        assert_eq!(aggregated.errors.len(), 0);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_aggregate_results_with_failure() {
+        let tmp_dir = temp_dir().join("subagent_aggregate_failure_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: true,
+                output_files: vec!["code.diff".to_string()],
+                error: None,
+                raw_output: Some("Implementation complete".to_string()),
+            },
+            DispatchResult {
+                role: "reviewer".to_string(),
+                success: false,
+                output_files: vec![],
+                error: Some("Review failed: quality issues".to_string()),
+                raw_output: Some("Review rejected".to_string()),
+            },
+        ];
+
+        for result in &results {
+            dispatcher.record_dispatch(result).unwrap();
+        }
+
+        let aggregated = dispatcher.aggregate_results_from_list(&results);
+        assert!(!aggregated.all_success);
+        assert_eq!(aggregated.errors.len(), 1);
+        assert!(aggregated.errors[0].contains("quality issues"));
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_compute_verdict_all_pass() {
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: true,
+                output_files: vec!["code.diff".to_string()],
+                error: None,
+                raw_output: None,
+            },
+            DispatchResult {
+                role: "reviewer".to_string(),
+                success: true,
+                output_files: vec!["review.md".to_string()],
+                error: None,
+                raw_output: None,
+            },
+            DispatchResult {
+                role: "verifier".to_string(),
+                success: true,
+                output_files: vec!["verification.md".to_string()],
+                error: None,
+                raw_output: None,
+            },
+        ];
+
+        let verdict = compute_tri_role_verdict(&results);
+        assert_eq!(verdict, TriRoleVerdict::Pass);
+    }
+
+    #[test]
+    fn test_compute_verdict_review_reject() {
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: true,
+                output_files: vec!["code.diff".to_string()],
+                error: None,
+                raw_output: None,
+            },
+            DispatchResult {
+                role: "reviewer".to_string(),
+                success: false,
+                output_files: vec![],
+                error: Some("Quality issues found".to_string()),
+                raw_output: None,
+            },
+        ];
+
+        let verdict = compute_tri_role_verdict(&results);
+        assert_eq!(verdict, TriRoleVerdict::ReviewRejected);
+    }
+
+    #[test]
+    fn test_compute_verdict_verify_fail() {
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: true,
+                output_files: vec!["code.diff".to_string()],
+                error: None,
+                raw_output: None,
+            },
+            DispatchResult {
+                role: "reviewer".to_string(),
+                success: true,
+                output_files: vec!["review.md".to_string()],
+                error: None,
+                raw_output: None,
+            },
+            DispatchResult {
+                role: "verifier".to_string(),
+                success: false,
+                output_files: vec![],
+                error: Some("Acceptance criteria not met".to_string()),
+                raw_output: None,
+            },
+        ];
+
+        let verdict = compute_tri_role_verdict(&results);
+        assert_eq!(verdict, TriRoleVerdict::VerificationFailed);
+    }
+
+    #[test]
+    fn test_compute_verdict_developer_fail() {
+        let results = vec![
+            DispatchResult {
+                role: "developer".to_string(),
+                success: false,
+                output_files: vec![],
+                error: Some("Implementation failed".to_string()),
+                raw_output: None,
+            },
+        ];
+
+        let verdict = compute_tri_role_verdict(&results);
+        assert_eq!(verdict, TriRoleVerdict::DevelopmentFailed);
     }
 }
