@@ -71,6 +71,9 @@ cargo test --all-targets
 # Lint / 代码检查
 cargo clippy
 
+# Reinstall CLI binary (after modifying crates) / 重新安装 CLI
+cargo install --path crates/zn-cli
+
 # CLI usage / CLI 使用
 zero-nine run --project . --host claude-code --goal "your goal"
 ```
@@ -89,6 +92,7 @@ zero-nine run --project . --host claude-code --goal "your goal"
 | Evolve / 进化 | `zn-evolve` | Skill scoring + candidates / 技能评分 + 候选 |
 | Host / 宿主 | `zn-host` | Claude/OpenCode adapters / 适配器 |
 | CLI / 命令行 | `zn-cli` | `zero-nine` binary / 二进制入口 |
+| Bridge / 桥接 | `zn-bridge` | gRPC + proto + type conversion / 类型转换层 |
 
 ## Claude Code Integration / Claude Code 集成
 
@@ -158,11 +162,21 @@ adapters/claude-code/.claude/skills/zero-nine-orchestrator/SKILL.md
 # Run all tests / 运行所有测试
 cargo test --all-targets
 
-# Test counts / 测试数量
+# Test counts / 测试数量 (107 total)
 # - zn-types: 16 tests
-# - zn-exec: 3 tests
+# - zn-exec: 31 tests
+# - zn-evolve: 21 tests
 # - zn-spec: 3 tests
+# - zn-host: 10 tests
+# - zn-cli: 2 tests
+# - zn-bridge: 5 tests
+# - zn-loop: 22 tests (incl. integration)
 ```
+
+## Code Quality / 代码质量
+
+- **`cargo clippy --all-targets`**: 零新增警告策略 — 修改代码不应引入新 clippy 警告
+- **Default `rustfmt`**: 无自定义 `.rustfmt.toml`，使用 Rust 默认格式规范
 
 ## Files to Read First / 优先阅读
 
@@ -171,3 +185,5 @@ cargo test --all-targets
 3. `crates/zn-types/src/lib.rs` — Data models / 数据模型
 4. `crates/zn-loop/src/lib.rs` — Scheduler / 调度器
 5. `crates/zn-exec/src/lib.rs` — Execution / 执行
+6. `crates/zn-bridge/src/types.rs` — gRPC type conversion / 类型转换
+7. `AGENTS.md` — Detailed project guide / 详细项目指南

@@ -19,7 +19,36 @@
       "Bash(git push:*)",
       "Bash(git commit -m 'chore: 删除废弃的 demo_project_v3 目录:*)",
       "Bash(npx skills:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(git commit:*)",
+      "Bash(grep -v \"^--$\")",
+      "Skill(update-config)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; echo \"$f\" | grep -q '\\.rs$' && rustfmt \"$f\"; } 2>/dev/null || true",
+            "statusMessage": "Formatting Rust..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo test --all-targets 2>&1 | grep \"test result\" | tail -10",
+            "timeout": 120,
+            "statusMessage": "Running quick verification..."
+          }
+        ]
+      }
     ]
   }
 }

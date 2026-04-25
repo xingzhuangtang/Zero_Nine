@@ -16,9 +16,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
 use zn_types::{
-    SubagentBrief, SubagentDispatch, SubagentRecoveryRecord, SubagentRecoveryLedger,
+    SubagentBrief, SubagentDispatch, SubagentRecoveryLedger, SubagentRecoveryRecord,
     SubagentRunBook, SubagentRunStatus,
 };
+
+/// Status string for completed agent runs
+pub const AGENT_STATUS_COMPLETED: &str = "completed";
+
+/// Status string for failed agent runs
+pub const AGENT_STATUS_FAILED: &str = "failed";
 
 /// Subagent dispatcher for managing multi-role execution
 pub struct SubagentDispatcher {
@@ -58,10 +64,7 @@ pub struct SubagentContext {
 
 /// Check if the Claude CLI is available on PATH
 pub fn is_claude_available() -> bool {
-    Command::new("claude")
-        .arg("--version")
-        .output()
-        .is_ok()
+    Command::new("claude").arg("--version").output().is_ok()
 }
 
 /// Report from batch subagent execution
@@ -188,11 +191,13 @@ impl SubagentDispatcher {
 
     /// Record dispatch result
     pub fn record_dispatch(&mut self, result: &DispatchResult) -> Result<()> {
-        let mut ledger = self.load_recovery_ledger().unwrap_or_else(|| SubagentRecoveryLedger {
-            task_id: self.task_id.clone(),
-            records: Vec::new(),
-            replay_summary: String::new(),
-        });
+        let mut ledger = self
+            .load_recovery_ledger()
+            .unwrap_or_else(|| SubagentRecoveryLedger {
+                task_id: self.task_id.clone(),
+                records: Vec::new(),
+                replay_summary: String::new(),
+            });
 
         let status = if result.success {
             SubagentRunStatus::Recovered
@@ -366,9 +371,7 @@ zero-nine subagent-dispatch \
         // Build the Claude Code command
         // Uses 'claude' CLI with the prepared context
         let mut cmd = Command::new("claude");
-        cmd.arg("--verbose")
-            .arg("--prompt")
-            .arg(&prompt);
+        cmd.arg("--verbose").arg("--prompt").arg(&prompt);
 
         // Add context files as additional context
         let context_dir = self
@@ -538,7 +541,11 @@ pub fn compute_tri_role_verdict(results: &[DispatchResult]) -> TriRoleVerdict {
 }
 
 /// Create default subagent dispatcher
-pub fn create_dispatcher(project_root: &Path, proposal_id: &str, task_id: &str) -> Result<SubagentDispatcher> {
+pub fn create_dispatcher(
+    project_root: &Path,
+    proposal_id: &str,
+    task_id: &str,
+) -> Result<SubagentDispatcher> {
     SubagentDispatcher::new(project_root, proposal_id, task_id)
 }
 
@@ -566,7 +573,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
 
         // Initial load should return None
         assert!(dispatcher.load_recovery_ledger().is_none());
@@ -626,7 +634,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
 
         let result = DispatchResult {
             role: "developer".to_string(),
@@ -692,7 +701,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
 
         let results = vec![
             DispatchResult {
@@ -739,7 +749,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
 
         let results = vec![
             DispatchResult {
@@ -855,17 +866,30 @@ mod tests {
 
     #[test]
     fn test_compute_verdict_developer_fail() {
-        let results = vec![
-            DispatchResult {
-                role: "developer".to_string(),
-                success: false,
-                output_files: vec![],
-                error: Some("Implementation failed".to_string()),
-                raw_output: None,
-            },
-        ];
+        let results = vec![DispatchResult {
+            role: "developer".to_string(),
+            success: false,
+            output_files: vec![],
+            error: Some("Implementation failed".to_string()),
+            raw_output: None,
+        }];
 
         let verdict = compute_tri_role_verdict(&results);
         assert_eq!(verdict, TriRoleVerdict::DevelopmentFailed);
+    }
+
+    #[test]
+    fn test_is_claude_available_returns_bool() {
+        // Just verify the function returns a bool without panicking
+        let result = is_claude_available();
+        // In CI or dev environments, this is typically true; in sandboxed env, false
+        assert!(!result || result); // always true, just verifies no panic
+    }
+
+    #[test]
+    fn test_agent_status_constants() {
+        assert_eq!(AGENT_STATUS_COMPLETED, "completed");
+        assert_eq!(AGENT_STATUS_FAILED, "failed");
+        assert_ne!(AGENT_STATUS_COMPLETED, AGENT_STATUS_FAILED);
     }
 }

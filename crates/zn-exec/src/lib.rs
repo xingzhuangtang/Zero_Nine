@@ -47,7 +47,7 @@ pub use token_counter::{TokenCounter, OutputOptimizer, TokenBudget};
 
 // Re-export proto types for convenience
 pub use zn_bridge::proto;
-pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, create_dispatcher};
+pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, SubagentExecutionReport, is_claude_available, create_dispatcher};
 pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket, TokenBudgetCheck, TokenBudgetStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +58,15 @@ pub enum TaskKind {
     Implementation,
     Verification,
     FinishBranch,
+}
+
+/// Outcome from real subagent execution, mergeable into ExecutionReport
+#[derive(Debug, Clone)]
+pub struct SubagentExecutionOutcome {
+    pub agent_runs: Vec<AgentRunRecord>,
+    pub evidence: Vec<EvidenceRecord>,
+    pub artifact_paths: Vec<String>,
+    pub all_succeeded: bool,
 }
 
 pub fn start_brainstorm(goal: &str, host: HostKind) -> BrainstormSession {
@@ -296,6 +305,130 @@ pub fn build_plan(task: &TaskItem) -> ExecutionPlan {
     }
 }
 
+/// Execute subagent dispatches via real Claude CLI calls.
+/// Returns a graceful fallback outcome when `claude` is not on PATH.
+pub fn execute_subagent_dispatch(
+    project_root: &Path,
+    plan: &ExecutionPlan,
+) -> SubagentExecutionOutcome {
+    if plan.subagents.is_empty() {
+        return SubagentExecutionOutcome {
+            agent_runs: Vec::new(),
+            evidence: Vec::new(),
+            artifact_paths: Vec::new(),
+            all_succeeded: true,
+        };
+    }
+
+    if !is_claude_available() {
+        info!("claude CLI not available; skipping real subagent execution");
+        return SubagentExecutionOutcome {
+            agent_runs: Vec::new(),
+            evidence: Vec::new(),
+            artifact_paths: Vec::new(),
+            all_succeeded: false,
+        };
+    }
+
+    // Use task_id from plan as proposal_id for path consistency
+    let proposal_id = plan.task_id.as_str();
+    let task_id = plan.task_id.as_str();
+
+    let Ok(mut dispatcher) = SubagentDispatcher::new(project_root, proposal_id, task_id) else {
+        return SubagentExecutionOutcome {
+            agent_runs: Vec::new(),
+            evidence: Vec::new(),
+            artifact_paths: Vec::new(),
+            all_succeeded: false,
+        };
+    };
+
+    // Build briefs from subagent specs in the plan
+    let briefs: Vec<SubagentBrief> = plan
+        .subagents
+        .iter()
+        .map(|sa| SubagentBrief {
+            role: sa.role.clone(),
+            goal: sa.goal.clone(),
+            inputs: sa.inputs.clone(),
+            outputs: sa.outputs.clone(),
+        })
+        .collect();
+
+    let objective = format!("Execute task {} for proposal {}", task_id, proposal_id);
+    let runbook = dispatcher.create_runbook(&briefs, &objective);
+
+    // Persist runbook artifacts to disk
+    let _ = dispatcher.save_runbook(&runbook);
+
+    // Prepare context for each role
+    for dispatch in &runbook.dispatches {
+        let context = SubagentContext {
+            role: dispatch.role.clone(),
+            context_files: dispatch.context_files.iter().map(|f| (f.clone(), format!("Context file: {}", f))).collect(),
+            expected_outputs: dispatch.expected_outputs.clone(),
+            objective: dispatch.command_hint.clone(),
+        };
+        let _ = dispatcher.prepare_context(&context);
+    }
+
+    // Execute all dispatches sequentially
+    let report = dispatcher.try_execute_all(&runbook);
+
+    // Convert report to outcome
+    let agent_runs: Vec<AgentRunRecord> = report
+        .results
+        .iter()
+        .map(|r| AgentRunRecord {
+            role: r.role.clone(),
+            status: if r.success {
+                subagent_dispatcher::AGENT_STATUS_COMPLETED.to_string()
+            } else {
+                subagent_dispatcher::AGENT_STATUS_FAILED.to_string()
+            },
+            summary: r.raw_output.clone().unwrap_or_default(),
+            outputs: r.output_files.clone(),
+            evidence_paths: r.output_files.clone(),
+            failure_summary: if r.success { None } else { r.error.clone() },
+            state_transitions: Vec::new(),
+            recovery_path: None,
+            evidence_archive_path: None,
+            replay_ready: r.success,
+            replay_command: None,
+        })
+        .collect();
+
+    let evidence: Vec<EvidenceRecord> = report
+        .results
+        .iter()
+        .filter(|r| r.success)
+        .flat_map(|r| {
+            r.output_files.iter().map(|path| EvidenceRecord {
+                key: format!("subagent_{}", r.role),
+                label: format!("{} output", r.role),
+                kind: EvidenceKind::Subagent,
+                status: EvidenceStatus::Collected,
+                required: false,
+                summary: format!("Subagent {} produced {}", r.role, path),
+                path: Some(path.clone()),
+            })
+        })
+        .collect();
+
+    let artifact_paths: Vec<String> = report
+        .results
+        .iter()
+        .flat_map(|r| r.output_files.clone())
+        .collect();
+
+    SubagentExecutionOutcome {
+        agent_runs,
+        evidence,
+        artifact_paths,
+        all_succeeded: report.all_succeeded,
+    }
+}
+
 pub fn execute_plan(
     project_root: &Path,
     task: &TaskItem,
@@ -332,6 +465,17 @@ pub fn execute_plan(
 
     let subagent_records = persist_subagent_runbook_artifacts(project_root, plan)?;
     artifacts.extend(subagent_records.all_paths.clone());
+
+    // Execute real subagent dispatches via Claude CLI
+    let subagent_outcome = execute_subagent_dispatch(project_root, plan);
+    artifacts.extend(subagent_outcome.artifact_paths.clone());
+    if !subagent_outcome.agent_runs.is_empty() {
+        details.push(format!(
+            "Subagent execution: {}/{} succeeded",
+            subagent_outcome.agent_runs.iter().filter(|r| r.status == subagent_dispatcher::AGENT_STATUS_COMPLETED).count(),
+            subagent_outcome.agent_runs.len()
+        ));
+    }
 
     let verification_actions = plan.verification_actions.clone();
     let verification_action_results = execute_verification_actions(project_root, plan)?;
@@ -405,14 +549,22 @@ pub fn execute_plan(
     let exit_code = if success { 0 } else { 1 };
 
     let finish_branch_automation = plan.finish_branch_automation.clone();
-    let agent_runs = agent_runs_for(plan, &subagent_records.dispatch_records);
-    let evidence = collect_evidence_records(
+
+    // Merge real subagent execution results with stub records
+    let agent_runs = if subagent_outcome.agent_runs.is_empty() {
+        agent_runs_for(plan, &subagent_records.dispatch_records)
+    } else {
+        subagent_outcome.agent_runs
+    };
+
+    let mut evidence = collect_evidence_records(
         plan,
         &generated_artifacts,
         &verification_action_results,
         workspace_record.as_ref(),
         finish_branch_result.as_ref(),
     );
+    evidence.extend(subagent_outcome.evidence);
     let review_evidence_keys = review_evidence_keys(&evidence);
     let verification_evidence_keys = verification_evidence_keys(&evidence);
     let review_verdict = review_verdict_for(plan, review_passed, review_evidence_keys);

@@ -1015,6 +1015,7 @@ pub enum EvidenceKind {
     Verification,
     Workspace,
     BranchAutomation,
+    Subagent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1497,7 +1498,12 @@ impl RuntimeEvent {
     }
 
     /// Set trace context
-    pub fn with_trace(mut self, trace_id: Option<String>, span_id: Option<String>, parent_span_id: Option<String>) -> Self {
+    pub fn with_trace(
+        mut self,
+        trace_id: Option<String>,
+        span_id: Option<String>,
+        parent_span_id: Option<String>,
+    ) -> Self {
         self.trace_id = trace_id;
         self.span_id = span_id;
         self.parent_span_id = parent_span_id;
@@ -2194,85 +2200,336 @@ mod tests {
 // M2: Failure Classification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FailureCategory { EnvironmentDrift, ToolError, VerificationFailed, PolicyBlocked, HumanRejected, ResourceExhausted, Timeout, Unknown }
+pub enum FailureCategory {
+    EnvironmentDrift,
+    ToolError,
+    VerificationFailed,
+    PolicyBlocked,
+    HumanRejected,
+    ResourceExhausted,
+    Timeout,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FailureSeverity { Low, Medium, High, Critical }
+pub enum FailureSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailureClassification {
-    pub id: String, pub category: FailureCategory, pub severity: FailureSeverity, pub description: String,
-    #[serde(default)] pub root_cause: Option<String>, #[serde(default)] pub retry_recommended: bool,
-    #[serde(default)] pub human_intervention_required: bool, #[serde(default)] pub suggested_fix: Option<String>,
+    pub id: String,
+    pub category: FailureCategory,
+    pub severity: FailureSeverity,
+    pub description: String,
+    #[serde(default)]
+    pub root_cause: Option<String>,
+    #[serde(default)]
+    pub retry_recommended: bool,
+    #[serde(default)]
+    pub human_intervention_required: bool,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
 }
 impl Default for FailureClassification {
-    fn default() -> Self { Self { id: String::new(), category: FailureCategory::Unknown, severity: FailureSeverity::Medium, description: String::new(), root_cause: None, retry_recommended: false, human_intervention_required: false, suggested_fix: None } }
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            category: FailureCategory::Unknown,
+            severity: FailureSeverity::Medium,
+            description: String::new(),
+            root_cause: None,
+            retry_recommended: false,
+            human_intervention_required: false,
+            suggested_fix: None,
+        }
+    }
 }
 
 // M3: Enhanced Verdict
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Verdict { pub status: VerdictStatus, pub rationale: String, pub evidence_ids: Vec<String>, #[serde(default)] pub timestamp: DateTime<Utc>, #[serde(default)] pub reviewer: Option<String> }
-impl Default for Verdict { fn default() -> Self { Self { status: VerdictStatus::Warning, rationale: String::new(), evidence_ids: Vec::new(), timestamp: Utc::now(), reviewer: None } } }
+pub struct Verdict {
+    pub status: VerdictStatus,
+    pub rationale: String,
+    pub evidence_ids: Vec<String>,
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+}
+impl Default for Verdict {
+    fn default() -> Self {
+        Self {
+            status: VerdictStatus::Warning,
+            rationale: String::new(),
+            evidence_ids: Vec::new(),
+            timestamp: Utc::now(),
+            reviewer: None,
+        }
+    }
+}
 
 // M10: Policy Engine
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionRiskLevel { Low, Medium, High, Critical }
-impl Default for ActionRiskLevel { fn default() -> Self { Self::Medium } }
+pub enum ActionRiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+impl Default for ActionRiskLevel {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PolicyDecision { Allow, Ask, Deny, Escalate }
+pub enum PolicyDecision {
+    Allow,
+    Ask,
+    Deny,
+    Escalate,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyRule { pub id: String, pub name: String, pub action_pattern: String, pub risk_level: ActionRiskLevel, pub default_decision: PolicyDecision, #[serde(default)] pub conditions: Vec<String>, #[serde(default)] pub exceptions: Vec<String> }
-impl Default for PolicyRule { fn default() -> Self { Self { id: String::new(), name: String::new(), action_pattern: String::new(), risk_level: ActionRiskLevel::Medium, default_decision: PolicyDecision::Ask, conditions: Vec::new(), exceptions: Vec::new() } } }
+pub struct PolicyRule {
+    pub id: String,
+    pub name: String,
+    pub action_pattern: String,
+    pub risk_level: ActionRiskLevel,
+    pub default_decision: PolicyDecision,
+    #[serde(default)]
+    pub conditions: Vec<String>,
+    #[serde(default)]
+    pub exceptions: Vec<String>,
+}
+impl Default for PolicyRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            action_pattern: String::new(),
+            risk_level: ActionRiskLevel::Medium,
+            default_decision: PolicyDecision::Ask,
+            conditions: Vec::new(),
+            exceptions: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyEngine { pub rules: Vec<PolicyRule>, #[serde(default)] pub max_allowed_risk: ActionRiskLevel, #[serde(default)] pub require_human_for_high_risk: bool }
-impl Default for PolicyEngine { fn default() -> Self { Self { rules: Vec::new(), max_allowed_risk: ActionRiskLevel::High, require_human_for_high_risk: true } } }
+pub struct PolicyEngine {
+    pub rules: Vec<PolicyRule>,
+    #[serde(default)]
+    pub max_allowed_risk: ActionRiskLevel,
+    #[serde(default)]
+    pub require_human_for_high_risk: bool,
+}
+impl Default for PolicyEngine {
+    fn default() -> Self {
+        Self {
+            rules: Vec::new(),
+            max_allowed_risk: ActionRiskLevel::High,
+            require_human_for_high_risk: true,
+        }
+    }
+}
 
 // M11: Human Supervision
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SupervisionAction { Approve, Reject, Modify, Takeover, Delegate }
+pub enum SupervisionAction {
+    Approve,
+    Reject,
+    Modify,
+    Takeover,
+    Delegate,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HumanIntervention { pub id: String, pub task_id: String, pub action: SupervisionAction, pub rationale: String, #[serde(default)] pub modifications: Option<String>, #[serde(default)] pub timestamp: DateTime<Utc>, #[serde(default)] pub human_id: Option<String> }
-impl Default for HumanIntervention { fn default() -> Self { Self { id: String::new(), task_id: String::new(), action: SupervisionAction::Approve, rationale: String::new(), modifications: None, timestamp: Utc::now(), human_id: None } } }
+pub struct HumanIntervention {
+    pub id: String,
+    pub task_id: String,
+    pub action: SupervisionAction,
+    pub rationale: String,
+    #[serde(default)]
+    pub modifications: Option<String>,
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub human_id: Option<String>,
+}
+impl Default for HumanIntervention {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            task_id: String::new(),
+            action: SupervisionAction::Approve,
+            rationale: String::new(),
+            modifications: None,
+            timestamp: Utc::now(),
+            human_id: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ApprovalStatus { Pending, Approved, Rejected, Expired }
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApprovalTicket { pub id: String, pub task_id: String, pub action_description: String, pub risk_level: ActionRiskLevel, pub status: ApprovalStatus, #[serde(default)] pub approved_by: Option<String>, #[serde(default)] pub approved_at: Option<DateTime<Utc>>, #[serde(default)] pub rejection_reason: Option<String> }
-impl Default for ApprovalTicket { fn default() -> Self { Self { id: String::new(), task_id: String::new(), action_description: String::new(), risk_level: ActionRiskLevel::Medium, status: ApprovalStatus::Pending, approved_by: None, approved_at: None, rejection_reason: None } } }
+pub struct ApprovalTicket {
+    pub id: String,
+    pub task_id: String,
+    pub action_description: String,
+    pub risk_level: ActionRiskLevel,
+    pub status: ApprovalStatus,
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub approved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub rejection_reason: Option<String>,
+}
+impl Default for ApprovalTicket {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            task_id: String::new(),
+            action_description: String::new(),
+            risk_level: ActionRiskLevel::Medium,
+            status: ApprovalStatus::Pending,
+            approved_by: None,
+            approved_at: None,
+            rejection_reason: None,
+        }
+    }
+}
 
 // M12: Skill Bundle & Versioning
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SkillVersion { pub major: u32, pub minor: u32, pub patch: u32 }
-impl std::fmt::Display for SkillVersion { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}.{}.{}", self.major, self.minor, self.patch) } }
-impl Default for SkillVersion { fn default() -> Self { Self { major: 1, minor: 0, patch: 0 } } }
+pub struct SkillVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+impl std::fmt::Display for SkillVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+impl Default for SkillVersion {
+    fn default() -> Self {
+        Self {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillBundle { pub id: String, pub name: String, pub version: SkillVersion, pub description: String, pub applicable_scenarios: Vec<String>, pub preconditions: Vec<String>, pub disabled_conditions: Vec<String>, pub risk_level: ActionRiskLevel, pub skill_chain: Vec<String>, pub artifacts: Vec<String>, #[serde(default)] pub usage_count: u32, #[serde(default)] pub success_rate: f32, #[serde(default)] pub created_at: DateTime<Utc>, #[serde(default)] pub updated_at: DateTime<Utc> }
-impl Default for SkillBundle { fn default() -> Self { Self { id: String::new(), name: String::new(), version: SkillVersion::default(), description: String::new(), applicable_scenarios: Vec::new(), preconditions: Vec::new(), disabled_conditions: Vec::new(), risk_level: ActionRiskLevel::Medium, skill_chain: Vec::new(), artifacts: Vec::new(), usage_count: 0, success_rate: 0.0, created_at: Utc::now(), updated_at: Utc::now() } } }
+pub struct SkillBundle {
+    pub id: String,
+    pub name: String,
+    pub version: SkillVersion,
+    pub description: String,
+    pub applicable_scenarios: Vec<String>,
+    pub preconditions: Vec<String>,
+    pub disabled_conditions: Vec<String>,
+    pub risk_level: ActionRiskLevel,
+    pub skill_chain: Vec<String>,
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub usage_count: u32,
+    #[serde(default)]
+    pub success_rate: f32,
+    #[serde(default)]
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub updated_at: DateTime<Utc>,
+}
+impl Default for SkillBundle {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            version: SkillVersion::default(),
+            description: String::new(),
+            applicable_scenarios: Vec::new(),
+            preconditions: Vec::new(),
+            disabled_conditions: Vec::new(),
+            risk_level: ActionRiskLevel::Medium,
+            skill_chain: Vec::new(),
+            artifacts: Vec::new(),
+            usage_count: 0,
+            success_rate: 0.0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillLibrary { pub bundles: Vec<SkillBundle>, #[serde(default)] pub active_bundle_ids: Vec<String> }
-impl Default for SkillLibrary { fn default() -> Self { Self { bundles: Vec::new(), active_bundle_ids: Vec::new() } } }
+pub struct SkillLibrary {
+    pub bundles: Vec<SkillBundle>,
+    #[serde(default)]
+    pub active_bundle_ids: Vec<String>,
+}
+impl Default for SkillLibrary {
+    fn default() -> Self {
+        Self {
+            bundles: Vec::new(),
+            active_bundle_ids: Vec::new(),
+        }
+    }
+}
 
 // M4-M6: Multi-Agent Orchestration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentRole { Planner, Executor, Reviewer, Coordinator }
-impl Default for AgentRole { fn default() -> Self { Self::Executor } }
+pub enum AgentRole {
+    Planner,
+    Executor,
+    Reviewer,
+    Coordinator,
+}
+impl Default for AgentRole {
+    fn default() -> Self {
+        Self::Executor
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MultiAgentOrchestration { pub proposal_id: String, pub dispatches: Vec<SubagentDispatch>, #[serde(default)] pub coordination_log: Vec<String>, #[serde(default)] pub conflict_resolutions: Vec<String> }
-impl Default for MultiAgentOrchestration { fn default() -> Self { Self { proposal_id: String::new(), dispatches: Vec::new(), coordination_log: Vec::new(), conflict_resolutions: Vec::new() } } }
+pub struct MultiAgentOrchestration {
+    pub proposal_id: String,
+    pub dispatches: Vec<SubagentDispatch>,
+    #[serde(default)]
+    pub coordination_log: Vec<String>,
+    #[serde(default)]
+    pub conflict_resolutions: Vec<String>,
+}
+impl Default for MultiAgentOrchestration {
+    fn default() -> Self {
+        Self {
+            proposal_id: String::new(),
+            dispatches: Vec::new(),
+            coordination_log: Vec::new(),
+            conflict_resolutions: Vec::new(),
+        }
+    }
+}
 
 // ==================== Karpathy-Inspired Evolution Types ====================
 
@@ -2442,11 +2699,11 @@ impl MultiDimensionalReward {
         let w_speed = *weights.get("execution_speed").unwrap_or(&default_weight);
         let w_token = *weights.get("token_efficiency").unwrap_or(&default_weight);
 
-        self.code_quality * w_code +
-        self.test_coverage * w_test +
-        self.user_satisfaction * w_user +
-        self.execution_speed * w_speed +
-        self.token_efficiency * w_token
+        self.code_quality * w_code
+            + self.test_coverage * w_test
+            + self.user_satisfaction * w_user
+            + self.execution_speed * w_speed
+            + self.token_efficiency * w_token
     }
 
     /// 记录对比数据
@@ -2473,7 +2730,8 @@ impl MultiDimensionalReward {
         let total: u32 = preference_counts.values().sum();
         if total > 0 {
             for (key, count) in preference_counts {
-                self.learned_weights.insert(key, count as f32 / total as f32);
+                self.learned_weights
+                    .insert(key, count as f32 / total as f32);
             }
         }
     }
@@ -2575,7 +2833,8 @@ impl Curriculum {
             return;
         }
 
-        let recent_avg: f32 = self.success_history.iter().sum::<f32>() / self.success_history.len() as f32;
+        let recent_avg: f32 =
+            self.success_history.iter().sum::<f32>() / self.success_history.len() as f32;
 
         // 成功率高则提高难度，低则降低
         if recent_avg > 0.8 {
@@ -2595,9 +2854,9 @@ impl Curriculum {
         let prereqs = self.skill_prerequisites.get(skill_id);
         match prereqs {
             None => true,
-            Some(reqs) => reqs.iter().all(|req| {
-                self.mastery_level.get(req).copied().unwrap_or(0.0) >= 0.7
-            }),
+            Some(reqs) => reqs
+                .iter()
+                .all(|req| self.mastery_level.get(req).copied().unwrap_or(0.0) >= 0.7),
         }
     }
 
@@ -2610,7 +2869,6 @@ impl Curriculum {
     }
 }
 
-
 // ==================== Tests for M2-M12 Types ====================
 
 #[cfg(test)]
@@ -2618,21 +2876,48 @@ mod blueprint_tests {
     use super::*;
 
     #[test]
-    fn test_failure_classification() { let f = FailureClassification::default(); assert_eq!(f.category, FailureCategory::Unknown); }
+    fn test_failure_classification() {
+        let f = FailureClassification::default();
+        assert_eq!(f.category, FailureCategory::Unknown);
+    }
     #[test]
-    fn test_verdict() { let v = Verdict::default(); assert_eq!(v.status, VerdictStatus::Warning); }
+    fn test_verdict() {
+        let v = Verdict::default();
+        assert_eq!(v.status, VerdictStatus::Warning);
+    }
     #[test]
-    fn test_policy_rule() { let r = PolicyRule::default(); assert_eq!(r.default_decision, PolicyDecision::Ask); }
+    fn test_policy_rule() {
+        let r = PolicyRule::default();
+        assert_eq!(r.default_decision, PolicyDecision::Ask);
+    }
     #[test]
-    fn test_human_intervention() { let h = HumanIntervention::default(); assert_eq!(h.action, SupervisionAction::Approve); }
+    fn test_human_intervention() {
+        let h = HumanIntervention::default();
+        assert_eq!(h.action, SupervisionAction::Approve);
+    }
     #[test]
-    fn test_approval_ticket() { let a = ApprovalTicket::default(); assert_eq!(a.status, ApprovalStatus::Pending); }
+    fn test_approval_ticket() {
+        let a = ApprovalTicket::default();
+        assert_eq!(a.status, ApprovalStatus::Pending);
+    }
     #[test]
-    fn test_skill_version() { let v = SkillVersion::default(); assert_eq!(v.major, 1); }
+    fn test_skill_version() {
+        let v = SkillVersion::default();
+        assert_eq!(v.major, 1);
+    }
     #[test]
-    fn test_skill_bundle() { let b = SkillBundle::default(); assert_eq!(b.usage_count, 0); }
+    fn test_skill_bundle() {
+        let b = SkillBundle::default();
+        assert_eq!(b.usage_count, 0);
+    }
     #[test]
-    fn test_agent_role() { let r = AgentRole::default(); assert_eq!(r, AgentRole::Executor); }
+    fn test_agent_role() {
+        let r = AgentRole::default();
+        assert_eq!(r, AgentRole::Executor);
+    }
     #[test]
-    fn test_multi_agent_orchestration() { let o = MultiAgentOrchestration::default(); assert_eq!(o.dispatches.len(), 0); }
+    fn test_multi_agent_orchestration() {
+        let o = MultiAgentOrchestration::default();
+        assert_eq!(o.dispatches.len(), 0);
+    }
 }

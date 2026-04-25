@@ -155,6 +155,7 @@ pub fn zn_evidence_kind_to_string(kind: zn_types::EvidenceKind) -> String {
         zn_types::EvidenceKind::Verification => "verification".to_string(),
         zn_types::EvidenceKind::Workspace => "workspace".to_string(),
         zn_types::EvidenceKind::BranchAutomation => "branch_automation".to_string(),
+        zn_types::EvidenceKind::Subagent => "subagent".to_string(),
     }
 }
 
@@ -166,6 +167,7 @@ pub fn string_to_zn_evidence_kind(s: &str) -> zn_types::EvidenceKind {
         "verification" => zn_types::EvidenceKind::Verification,
         "workspace" => zn_types::EvidenceKind::Workspace,
         "branch_automation" => zn_types::EvidenceKind::BranchAutomation,
+        "subagent" => zn_types::EvidenceKind::Subagent,
         _ => zn_types::EvidenceKind::GeneratedArtifact,
     }
 }
