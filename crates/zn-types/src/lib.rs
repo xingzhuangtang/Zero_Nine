@@ -33,6 +33,10 @@ pub struct Policy {
     pub max_retries: u8,
     pub verify_before_complete: bool,
     pub auto_evolve: bool,
+    #[serde(default)]
+    pub max_total_iterations: Option<u32>,
+    #[serde(default)]
+    pub max_elapsed_seconds: Option<u64>,
 }
 
 impl Default for Policy {
@@ -41,6 +45,8 @@ impl Default for Policy {
             max_retries: 2,
             verify_before_complete: true,
             auto_evolve: true,
+            max_total_iterations: Some(50),
+            max_elapsed_seconds: Some(3600),
         }
     }
 }
@@ -52,6 +58,10 @@ pub struct ProjectManifest {
     pub default_host: HostKind,
     pub skill_dirs: Vec<String>,
     pub policy: Policy,
+    #[serde(default)]
+    pub github_repo: Option<String>,
+    #[serde(default)]
+    pub bridge_address: Option<String>,
 }
 
 impl Default for ProjectManifest {
@@ -62,6 +72,8 @@ impl Default for ProjectManifest {
             default_host: HostKind::Terminal,
             skill_dirs: vec![".claude/skills".to_string(), ".opencode/skills".to_string()],
             policy: Policy::default(),
+            github_repo: None,
+            bridge_address: None,
         }
     }
 }
@@ -97,6 +109,7 @@ pub enum LoopStage {
     Retrying,
     Escalated,
     Archived,
+    Completed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +124,114 @@ pub enum ExecutionMode {
     TddCycle,
     Verification,
     FinishBranch,
+}
+
+/// Subagent 执行路径选择 — 为独立部署预留双路径模式
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentExecutionPath {
+    /// 直接 CLI 执行（默认）
+    #[default]
+    Cli,
+    /// gRPC 桥接远程 agent
+    Bridge,
+    /// CLI 优先，失败时回退到桥接
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStrategy {
+    LinearSequential,
+    ParallelBatch,
+    RiskGated,
+}
+
+// ==================== M7: Lifecycle State Machine ====================
+
+/// 状态转换记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateTransition {
+    pub from: String,
+    pub to: String,
+    pub stage_from: LoopStage,
+    pub stage_to: LoopStage,
+    pub triggered_at: DateTime<Utc>,
+    pub reason: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
+/// 非法转换错误
+#[derive(Debug)]
+pub struct IllegalTransitionError {
+    pub from: LoopStage,
+    pub to: LoopStage,
+    pub allowed: Vec<LoopStage>,
+}
+
+impl std::fmt::Display for IllegalTransitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "illegal transition from {:?} to {:?}; allowed: {:?}",
+            self.from, self.to, self.allowed
+        )
+    }
+}
+
+impl std::error::Error for IllegalTransitionError {}
+
+impl LoopStage {
+    /// 返回允许转换到的目标状态
+    pub fn allowed_transitions(&self) -> Vec<LoopStage> {
+        match self {
+            Self::Idle => vec![Self::SpecDrafting, Self::Archived],
+            Self::SpecDrafting => vec![Self::Ready, Self::Archived],
+            Self::Ready => vec![Self::RunningTask, Self::Archived],
+            Self::RunningTask => vec![
+                Self::Verifying,
+                Self::Retrying,
+                Self::Escalated,
+                Self::Archived,
+            ],
+            Self::Verifying => vec![Self::RunningTask, Self::Completed],
+            Self::Retrying => vec![Self::RunningTask, Self::Escalated],
+            Self::Escalated => vec![Self::RunningTask, Self::Archived],
+            Self::Archived => vec![Self::Ready],
+            Self::Completed => vec![],
+        }
+    }
+
+    /// 检查转换是否合法
+    pub fn can_transition_to(&self, target: LoopStage) -> bool {
+        self.allowed_transitions().contains(&target)
+    }
+
+    /// 执行转换并记录转换事件
+    pub fn transition_to(
+        &self,
+        target: LoopStage,
+        reason: &str,
+        task_id: Option<&str>,
+    ) -> Result<StateTransition, IllegalTransitionError> {
+        if !self.can_transition_to(target.clone()) {
+            return Err(IllegalTransitionError {
+                from: self.clone(),
+                to: target.clone(),
+                allowed: self.allowed_transitions(),
+            });
+        }
+        Ok(StateTransition {
+            from: format!("{:?}", self),
+            to: format!("{:?}", target),
+            stage_from: self.clone(),
+            stage_to: target,
+            triggered_at: Utc::now(),
+            reason: reason.to_string(),
+            task_id: task_id.map(String::from),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +263,10 @@ pub struct TaskItem {
     pub kind: Option<String>,
     #[serde(default)]
     pub contract: TaskContract,
+    #[serde(default)]
+    pub max_retries: Option<u8>,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +282,14 @@ pub struct Proposal {
     pub design_summary: Option<String>,
     #[serde(default)]
     pub source_brainstorm_session_id: Option<String>,
+
+    // M6: Issue 来源追踪
+    #[serde(default)]
+    pub source_issue_number: Option<u64>,
+    #[serde(default)]
+    pub source_repo: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<IssueSource>,
 
     // M1: Structured Spec Contract Fields (蓝图 M1-1)
     #[serde(default)]
@@ -175,6 +308,8 @@ pub struct Proposal {
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
     pub non_goals: Vec<String>,
+    #[serde(default)]
+    pub execution_strategy: Option<ExecutionStrategy>,
 
     pub tasks: Vec<TaskItem>,
 }
@@ -328,6 +463,15 @@ pub struct LoopState {
     pub retry_count: u8,
     pub stage: LoopStage,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
+    #[serde(default)]
+    pub iteration_start: DateTime<Utc>,
+    #[serde(default)]
+    pub elapsed_seconds: u64,
+    /// M7: 状态转换历史
+    #[serde(default)]
+    pub transition_history: Vec<StateTransition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -848,6 +992,8 @@ pub struct SubagentBrief {
     pub goal: String,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -907,6 +1053,9 @@ pub struct FinishBranchResult {
     pub worktree_path: Option<String>,
     pub summary: String,
     pub follow_ups: Vec<String>,
+    // M6: PR URL for writeback
+    #[serde(default)]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1110,6 +1259,8 @@ pub struct SubagentDispatch {
     pub command_hint: String,
     pub context_files: Vec<String>,
     pub expected_outputs: Vec<String>,
+    #[serde(default)]
+    pub depends_on_roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1135,6 +1286,11 @@ pub struct BranchFinishRequest {
     pub worktree_path: Option<String>,
     pub verify_clean: bool,
     pub confirmed: bool,
+    // M6: Structured PR metadata (if None, falls back to --fill)
+    #[serde(default)]
+    pub pr_title: Option<String>,
+    #[serde(default)]
+    pub pr_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1280,6 +1436,8 @@ pub struct ExecutionEnvelope {
     pub context_protocol: Option<ContextInjectionProtocol>,
     pub context_protocol_path: Option<String>,
     pub quality_gates: Vec<QualityGate>,
+    #[serde(default)]
+    pub bridge_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1306,6 +1464,10 @@ pub struct ExecutionPlan {
     pub workspace_record: Option<WorkspaceRecord>,
     pub verification_actions: Vec<VerificationAction>,
     pub finish_branch_automation: Option<FinishBranchAutomation>,
+    #[serde(default)]
+    pub execution_path: SubagentExecutionPath,
+    #[serde(default)]
+    pub bridge_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1343,6 +1505,14 @@ pub struct ExecutionReport {
     // User feedback (added in v1.1)
     #[serde(default)]
     pub user_feedback: Option<UserFeedback>,
+    #[serde(default)]
+    pub failure_classification: Option<FailureClassification>,
+    #[serde(default)]
+    pub tri_role_verdict: Option<String>,
+    #[serde(default)]
+    pub authorization_ticket_id: Option<String>,
+    #[serde(default)]
+    pub authorized_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1651,6 +1821,9 @@ impl Default for Proposal {
             updated_at: Utc::now(),
             design_summary: None,
             source_brainstorm_session_id: None,
+            source_issue_number: None,
+            source_repo: None,
+            source_type: None,
             problem_statement: None,
             scope_in: Vec::new(),
             scope_out: Vec::new(),
@@ -1659,6 +1832,7 @@ impl Default for Proposal {
             risks: Vec::new(),
             dependencies: Vec::new(),
             non_goals: Vec::new(),
+            execution_strategy: None,
             tasks: Vec::new(),
         }
     }
@@ -1983,6 +2157,8 @@ mod tests {
                     depends_on: vec![],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "2".to_string(),
@@ -1992,6 +2168,8 @@ mod tests {
                     depends_on: vec!["1".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
             ],
             edges: vec![],
@@ -2017,6 +2195,8 @@ mod tests {
                     depends_on: vec!["3".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "2".to_string(),
@@ -2026,6 +2206,8 @@ mod tests {
                     depends_on: vec!["1".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "3".to_string(),
@@ -2035,6 +2217,8 @@ mod tests {
                     depends_on: vec!["2".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
             ],
             edges: vec![],
@@ -2061,6 +2245,8 @@ mod tests {
                 depends_on: vec!["non-existent".to_string()],
                 kind: None,
                 contract: TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
             }],
             edges: vec![],
         };
@@ -2086,6 +2272,8 @@ mod tests {
                 depends_on: vec!["1".to_string()],
                 kind: None,
                 contract: TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
             }],
             edges: vec![],
         };
@@ -2129,6 +2317,8 @@ mod tests {
                     depends_on: vec![],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "1".to_string(),
@@ -2138,6 +2328,8 @@ mod tests {
                     depends_on: vec![],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
             ],
             edges: vec![],
@@ -2165,6 +2357,8 @@ mod tests {
                     depends_on: vec![],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "2".to_string(),
@@ -2174,6 +2368,8 @@ mod tests {
                     depends_on: vec!["1".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
                 TaskItem {
                     id: "3".to_string(),
@@ -2183,6 +2379,8 @@ mod tests {
                     depends_on: vec!["2".to_string()],
                     kind: None,
                     contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
                 },
             ],
             edges: vec![],
@@ -2248,6 +2446,148 @@ impl Default for FailureClassification {
             suggested_fix: None,
         }
     }
+}
+
+// M10: Safety Event — recorded when policy/guardrail triggers, fed back to evolution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetyEvent {
+    pub event_id: String,
+    pub task_id: String,
+    pub proposal_id: String,
+    pub event_type: SafetyEventType,
+    pub severity: FailureSeverity,
+    pub description: String,
+    pub action_taken: String,
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyEventType {
+    PolicyDenied,      // policy engine blocked an action
+    MergeBlocked,      // quality gate prevented merge/push
+    HumanIntervention, // human was asked to intervene
+    DriftHalt,         // execution halted due to drift detection
+}
+
+impl Default for SafetyEvent {
+    fn default() -> Self {
+        Self {
+            event_id: String::new(),
+            task_id: String::new(),
+            proposal_id: String::new(),
+            event_type: SafetyEventType::PolicyDenied,
+            severity: FailureSeverity::Medium,
+            description: String::new(),
+            action_taken: String::new(),
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+impl SafetyEvent {
+    /// Derive a safety event from an execution report if guardrails were triggered.
+    /// Returns None for clean completions.
+    pub fn from_report(report: &ExecutionReport, proposal_id: &str) -> Option<Self> {
+        let classification = report.failure_classification.as_ref()?;
+        let (event_type, description) = match classification.category {
+            FailureCategory::PolicyBlocked => (
+                SafetyEventType::PolicyDenied,
+                format!(
+                    "Policy blocked task {}: {}",
+                    report.task_id,
+                    report
+                        .failure_summary
+                        .as_deref()
+                        .unwrap_or("policy violation")
+                ),
+            ),
+            FailureCategory::HumanRejected => (
+                SafetyEventType::HumanIntervention,
+                format!(
+                    "Human intervention for task {}: {}",
+                    report.task_id,
+                    report
+                        .failure_summary
+                        .as_deref()
+                        .unwrap_or("human review rejected")
+                ),
+            ),
+            FailureCategory::EnvironmentDrift => (
+                SafetyEventType::DriftHalt,
+                format!(
+                    "Drift halted task {}: {}",
+                    report.task_id,
+                    report
+                        .failure_summary
+                        .as_deref()
+                        .unwrap_or("environment drift detected")
+                ),
+            ),
+            _ => return None, // non-safety failures handled separately
+        };
+
+        let severity = classification.severity.clone();
+
+        Some(Self {
+            event_id: format!("safety-{}-{}", report.task_id, Utc::now().timestamp()),
+            task_id: report.task_id.clone(),
+            proposal_id: proposal_id.to_string(),
+            event_type,
+            severity,
+            description,
+            action_taken: classification
+                .suggested_fix
+                .clone()
+                .unwrap_or_else(|| "escalated".to_string()),
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// Emit MergeBlocked when quality gates prevent merge/push.
+    pub fn merge_blocked(
+        task_id: &str,
+        proposal_id: &str,
+        tests_passed: bool,
+        review_passed: bool,
+    ) -> Self {
+        let reason = match (tests_passed, review_passed) {
+            (false, false) => "both tests and review failed",
+            (false, true) => "tests failed",
+            (true, false) => "review failed",
+            (true, true) => "unknown",
+        };
+        Self {
+            event_id: format!("safety-merge-{}-{}", task_id, Utc::now().timestamp()),
+            task_id: task_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            event_type: SafetyEventType::MergeBlocked,
+            severity: FailureSeverity::Critical,
+            description: format!("Merge blocked: quality gates not passed ({})", reason),
+            action_taken: "merge_blocked_escalated".to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+// M5: Compensation Actions — cleanup on multi-role chain failure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompensationAction {
+    pub action_type: CompensationType,
+    pub target: String,
+    pub reason: String,
+    #[serde(default)]
+    pub executed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompensationType {
+    DeleteWorktree,
+    DeleteBranch,
+    CleanupArtifacts,
+    ResetWorkspace,
 }
 
 // M3: Enhanced Verdict
@@ -2869,6 +3209,93 @@ impl Curriculum {
     }
 }
 
+// ==================== M6: GitHub Issue & PR Types ====================
+
+/// Issue 来源类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueSource {
+    #[serde(rename = "github")]
+    GitHub,
+    #[serde(rename = "local")]
+    Local,
+    #[serde(rename = "manual")]
+    Manual,
+}
+
+/// GitHub Issue 标签
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubLabel {
+    pub name: String,
+}
+
+/// GitHub Issue 指派人
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubAssignee {
+    pub login: String,
+}
+
+/// GitHub Issue 结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubIssue {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: String,
+    #[serde(default)]
+    pub labels: Vec<GitHubLabel>,
+    #[serde(default)]
+    pub assignees: Vec<GitHubAssignee>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 本地 Issue 结构（.issues/ 目录）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalIssue {
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+/// PR 创建结果
+#[derive(Debug, Clone)]
+pub struct PrResult {
+    pub success: bool,
+    pub pr_url: String,
+    pub message: String,
+}
+
+/// Issue/PR 评论结果
+#[derive(Debug, Clone)]
+pub struct CommentResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// 导入 Issue 的结果
+#[derive(Debug, Clone)]
+pub struct ImportedIssue {
+    pub source: String,
+    pub issue_id: String,
+    pub proposal: Proposal,
+    pub import_path: String,
+}
+
+/// Issue-to-Proposal 映射记录
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueMapping {
+    pub issue_number: u64,
+    pub repo: String,
+    pub proposal_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
 // ==================== Tests for M2-M12 Types ====================
 
 #[cfg(test)]
@@ -2919,5 +3346,192 @@ mod blueprint_tests {
     fn test_multi_agent_orchestration() {
         let o = MultiAgentOrchestration::default();
         assert_eq!(o.dispatches.len(), 0);
+    }
+
+    // M6: Issue source tracking
+    #[test]
+    fn test_issue_source_serialization() {
+        let github = IssueSource::GitHub;
+        let local = IssueSource::Local;
+        let manual = IssueSource::Manual;
+
+        assert_eq!(serde_json::to_string(&github).unwrap(), "\"github\"");
+        assert_eq!(serde_json::to_string(&local).unwrap(), "\"local\"");
+        assert_eq!(serde_json::to_string(&manual).unwrap(), "\"manual\"");
+    }
+
+    #[test]
+    fn test_proposal_source_tracking() {
+        let mut proposal = Proposal::default();
+        assert!(proposal.source_issue_number.is_none());
+        proposal.source_issue_number = Some(42);
+        proposal.source_repo = Some("owner/repo".to_string());
+        proposal.source_type = Some(IssueSource::GitHub);
+        assert_eq!(proposal.source_issue_number, Some(42));
+    }
+
+    #[test]
+    fn test_proposal_source_roundtrip() {
+        let mut proposal = Proposal::default();
+        proposal.id = "test".to_string();
+        proposal.source_issue_number = Some(99);
+        proposal.source_repo = Some("org/repo".to_string());
+        proposal.source_type = Some(IssueSource::Local);
+        let json = serde_json::to_string(&proposal).unwrap();
+        let restored: Proposal = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.source_issue_number, Some(99));
+    }
+
+    #[test]
+    fn test_issue_mapping_serialization() {
+        let mapping = IssueMapping {
+            issue_number: 123,
+            repo: "owner/repo".to_string(),
+            proposal_id: "proposal-abc".to_string(),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&mapping).unwrap();
+        let restored: IssueMapping = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.issue_number, 123);
+    }
+
+    #[test]
+    fn test_github_issue_parsing() {
+        let json = r#"{"number":42,"title":"Test","body":"Desc","state":"open","labels":[{"name":"bug"}],"assignees":[{"login":"dev"}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let issue: GitHubIssue = serde_json::from_str(json).unwrap();
+        assert_eq!(issue.number, 42);
+        assert_eq!(issue.labels[0].name, "bug");
+    }
+
+    // M7: State machine tests
+    #[test]
+    fn test_state_machine_allowed_transitions() {
+        assert_eq!(
+            LoopStage::Ready.allowed_transitions(),
+            vec![LoopStage::RunningTask, LoopStage::Archived]
+        );
+        assert!(LoopStage::Completed.allowed_transitions().is_empty());
+    }
+
+    #[test]
+    fn test_state_machine_can_transition() {
+        assert!(LoopStage::Ready.can_transition_to(LoopStage::RunningTask));
+        assert!(LoopStage::RunningTask.can_transition_to(LoopStage::Verifying));
+        assert!(LoopStage::Verifying.can_transition_to(LoopStage::Completed));
+        assert!(LoopStage::Archived.can_transition_to(LoopStage::Ready));
+        assert!(!LoopStage::Completed.can_transition_to(LoopStage::RunningTask));
+        assert!(!LoopStage::Ready.can_transition_to(LoopStage::Completed));
+    }
+
+    #[test]
+    fn test_state_machine_transition_to_valid() {
+        let t = LoopStage::Ready
+            .transition_to(LoopStage::RunningTask, "task_started", Some("task-1"))
+            .unwrap();
+        assert_eq!(t.from, "Ready");
+        assert_eq!(t.to, "RunningTask");
+        assert_eq!(t.task_id, Some("task-1".to_string()));
+    }
+
+    #[test]
+    fn test_state_machine_transition_to_invalid() {
+        let result = LoopStage::Completed.transition_to(LoopStage::RunningTask, "resume", None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.from, LoopStage::Completed);
+        assert!(err.allowed.is_empty());
+    }
+
+    #[test]
+    fn test_state_transition_serialization() {
+        let t = LoopStage::RunningTask
+            .transition_to(LoopStage::Verifying, "task_completed", Some("task-1"))
+            .unwrap();
+        let json = serde_json::to_string(&t).unwrap();
+        let restored: StateTransition = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.stage_from, LoopStage::RunningTask);
+        assert_eq!(restored.stage_to, LoopStage::Verifying);
+        assert_eq!(restored.reason, "task_completed");
+    }
+
+    #[test]
+    fn test_loop_stage_completed_is_terminal() {
+        assert!(!LoopStage::Completed.can_transition_to(LoopStage::RunningTask));
+        assert!(!LoopStage::Completed.can_transition_to(LoopStage::Verifying));
+        assert!(!LoopStage::Completed.can_transition_to(LoopStage::Archived));
+    }
+
+    #[test]
+    fn test_subagent_execution_path_serialization() {
+        // Test Cli
+        let path = SubagentExecutionPath::Cli;
+        let json = serde_json::to_string(&path).unwrap();
+        assert_eq!(json, "\"cli\"");
+        assert_eq!(
+            serde_json::from_str::<SubagentExecutionPath>(&json).unwrap(),
+            path
+        );
+
+        // Test Bridge
+        let path = SubagentExecutionPath::Bridge;
+        let json = serde_json::to_string(&path).unwrap();
+        assert_eq!(json, "\"bridge\"");
+        assert_eq!(
+            serde_json::from_str::<SubagentExecutionPath>(&json).unwrap(),
+            path
+        );
+
+        // Test Hybrid
+        let path = SubagentExecutionPath::Hybrid;
+        let json = serde_json::to_string(&path).unwrap();
+        assert_eq!(json, "\"hybrid\"");
+        assert_eq!(
+            serde_json::from_str::<SubagentExecutionPath>(&json).unwrap(),
+            path
+        );
+
+        // Test default
+        let default = SubagentExecutionPath::default();
+        assert_eq!(default, SubagentExecutionPath::Cli);
+    }
+
+    #[test]
+    fn test_project_manifest_bridge_address() {
+        let manifest = ProjectManifest {
+            bridge_address: Some("127.0.0.1:50051".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(manifest.bridge_address, Some("127.0.0.1:50051".to_string()));
+
+        // Test serialization roundtrip
+        let json = serde_json::to_string(&manifest).unwrap();
+        let restored: ProjectManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.bridge_address, Some("127.0.0.1:50051".to_string()));
+    }
+
+    #[test]
+    fn test_execution_plan_bridge_fields() {
+        let plan = ExecutionPlan {
+            task_id: "test".to_string(),
+            objective: "test".to_string(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Bridge,
+            bridge_address: Some("127.0.0.1:50051".to_string()),
+        };
+
+        assert_eq!(plan.execution_path, SubagentExecutionPath::Bridge);
+        assert_eq!(plan.bridge_address, Some("127.0.0.1:50051".to_string()));
     }
 }

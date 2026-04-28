@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Result};
+use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use zn_host::detect_host;
-use zn_types::HostKind;
-use zn_spec::skill_manager::create_default_manager;
-use zn_spec::skill_format::SkillSummary;
-use zn_spec::memory_tool::{create_default_manager as create_memory_manager, MemoryAction, MemoryTarget};
-use zn_spec::session_search::create_default_searcher;
 use zn_evolve::scorer::create_default_scorer;
-use chrono::{TimeZone, Local};
+use zn_host::detect_host;
+use zn_spec::memory_tool::{
+    create_default_manager as create_memory_manager, MemoryAction, MemoryTarget,
+};
+use zn_spec::session_search::create_default_searcher;
+use zn_spec::skill_format::SkillSummary;
+use zn_spec::skill_manager::create_default_manager;
+use zn_types::HostKind;
 
 mod tui_dashboard;
 
@@ -46,6 +48,8 @@ enum Commands {
         goal: String,
         #[arg(long, default_value_t = false)]
         confirm_remote_finish: bool,
+        #[arg(long)]
+        bridge_address: Option<String>,
     },
     Status {
         #[arg(long, default_value = ".")]
@@ -58,6 +62,8 @@ enum Commands {
         host: Option<String>,
         #[arg(long, default_value_t = false)]
         confirm_remote_finish: bool,
+        #[arg(long)]
+        bridge_address: Option<String>,
     },
     Export {
         #[arg(long, default_value = ".")]
@@ -107,6 +113,11 @@ enum Commands {
     Observe {
         #[command(subcommand)]
         command: ObserveCommands,
+    },
+    /// Start gRPC bridge server for independent agent dispatch
+    BridgeServer {
+        #[arg(long, default_value_t = 50051)]
+        port: u16,
     },
 }
 
@@ -246,7 +257,7 @@ enum MemoryCommands {
     /// Add content to memory
     Add {
         #[arg(long)]
-        target: String,  // memory or user
+        target: String, // memory or user
         #[arg(long)]
         content: String,
         #[arg(long)]
@@ -442,6 +453,16 @@ enum GithubCommands {
     },
 }
 
+/// Set bridge address in the project manifest
+fn set_bridge_address(project: &PathBuf, addr: &str) -> Result<()> {
+    use zn_spec::{load_manifest, save_manifest};
+    let mut manifest = load_manifest(project)?.unwrap_or_default();
+    manifest.bridge_address = Some(addr.to_string());
+    save_manifest(project, &manifest)?;
+    println!("Bridge address set to: {}", addr);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -457,9 +478,9 @@ fn main() -> Result<()> {
         } => {
             let host = detect_host(host.as_deref());
             let output = if !resume && !matches!(host, HostKind::Terminal) {
-                let input = goal
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("goal or answer input is required for host-native brainstorming"))?;
+                let input = goal.as_deref().ok_or_else(|| {
+                    anyhow!("goal or answer input is required for host-native brainstorming")
+                })?;
                 zn_loop::brainstorm_host_turn(&project, input, host)?
             } else {
                 zn_loop::brainstorm(&project, goal.as_deref(), host, resume)?
@@ -471,7 +492,11 @@ fn main() -> Result<()> {
             host,
             goal,
             confirm_remote_finish,
+            bridge_address,
         } => {
+            if let Some(addr) = &bridge_address {
+                set_bridge_address(&project, addr)?;
+            }
             let output = zn_loop::run_goal(
                 &project,
                 &goal,
@@ -487,10 +512,18 @@ fn main() -> Result<()> {
             project,
             host,
             confirm_remote_finish,
+            bridge_address,
         } => {
+            if let Some(addr) = &bridge_address {
+                set_bridge_address(&project, addr)?;
+            }
             println!(
                 "{}",
-                zn_loop::resume(&project, detect_host(host.as_deref()), confirm_remote_finish)?
+                zn_loop::resume(
+                    &project,
+                    detect_host(host.as_deref()),
+                    confirm_remote_finish
+                )?
             );
         }
         Commands::Export { project } => {
@@ -508,7 +541,8 @@ fn main() -> Result<()> {
                 } => {
                     let manager = create_default_manager(&project);
                     let content_str = content.unwrap_or_else(|| DEFAULT_SKILL_CONTENT.to_string());
-                    let path = manager.create(&name, &content_str, &category, &description, &version)?;
+                    let path =
+                        manager.create(&name, &content_str, &category, &description, &version)?;
                     println!("Created skill at: {}", path.display());
                 }
                 SkillCommands::List { detailed } => {
@@ -580,11 +614,19 @@ fn main() -> Result<()> {
                         for summary in summaries {
                             if detailed {
                                 println!("  {} (v{})", summary.skill_name, summary.execution_count);
-                                println!("    Avg Score: {:.2}, Success Rate: {:.1}%, Latency: {}ms\n",
-                                    summary.average_score, summary.success_rate * 100.0, summary.average_latency_ms);
+                                println!(
+                                    "    Avg Score: {:.2}, Success Rate: {:.1}%, Latency: {}ms\n",
+                                    summary.average_score,
+                                    summary.success_rate * 100.0,
+                                    summary.average_latency_ms
+                                );
                             } else {
-                                println!("  {}: score={:.2}, success={:.1}%",
-                                    summary.skill_name, summary.average_score, summary.success_rate * 100.0);
+                                println!(
+                                    "  {}: score={:.2}, success={:.1}%",
+                                    summary.skill_name,
+                                    summary.average_score,
+                                    summary.success_rate * 100.0
+                                );
                             }
                         }
                     }
@@ -618,11 +660,20 @@ fn main() -> Result<()> {
 
                             for line in reader.lines() {
                                 let line = line?;
-                                if let Ok(event) = serde_json::from_str::<zn_types::RuntimeEvent>(&line) {
+                                if let Ok(event) =
+                                    serde_json::from_str::<zn_types::RuntimeEvent>(&line)
+                                {
                                     if event.event == "task_execution" {
                                         if let Some(payload) = event.payload {
-                                            if let Ok(report) = serde_json::from_value::<zn_types::ExecutionReport>(payload) {
-                                                let mut dist = zn_evolve::distiller::create_default_distiller(&project)?;
+                                            if let Ok(report) =
+                                                serde_json::from_value::<zn_types::ExecutionReport>(
+                                                    payload,
+                                                )
+                                            {
+                                                let mut dist =
+                                                    zn_evolve::distiller::create_default_distiller(
+                                                        &project,
+                                                    )?;
                                                 let skills = dist.distill_from_report(&report)?;
                                                 distilled_count += skills.len();
                                             }
@@ -631,7 +682,10 @@ fn main() -> Result<()> {
                                 }
                             }
 
-                            println!("Distilled {} new skill(s) from execution history", distilled_count);
+                            println!(
+                                "Distilled {} new skill(s) from execution history",
+                                distilled_count
+                            );
                         }
                     } else {
                         // Just show existing distilled skills
@@ -649,12 +703,18 @@ fn main() -> Result<()> {
                         println!("Found {} distilled skill(s):\n", skills.len());
                         for skill in skills {
                             if detailed {
-                                println!("  Skill: {} (v{})", skill.bundle.name, skill.bundle.version);
+                                println!(
+                                    "  Skill: {} (v{})",
+                                    skill.bundle.name, skill.bundle.version
+                                );
                                 println!("    ID: {}", skill.bundle.id);
                                 println!("    Description: {}", skill.bundle.description);
                                 println!("    Confidence: {:.2}", skill.confidence_score);
                                 println!("    Usage Count: {}", skill.bundle.usage_count);
-                                println!("    Success Rate: {:.1}%", skill.bundle.success_rate * 100.0);
+                                println!(
+                                    "    Success Rate: {:.1}%",
+                                    skill.bundle.success_rate * 100.0
+                                );
                                 println!("    Preconditions: {:?}", skill.bundle.preconditions);
                                 println!("    Recommendations:");
                                 for rec in &skill.usage_recommendations {
@@ -668,12 +728,14 @@ fn main() -> Result<()> {
                                 }
                                 println!();
                             } else {
-                                println!("  {} (v{}): {} [confidence: {:.2}, usage: {}]",
+                                println!(
+                                    "  {} (v{}): {} [confidence: {:.2}, usage: {}]",
                                     skill.bundle.name,
                                     skill.bundle.version,
                                     skill.bundle.description,
                                     skill.confidence_score,
-                                    skill.bundle.usage_count);
+                                    skill.bundle.usage_count
+                                );
                             }
                         }
                     }
@@ -685,13 +747,19 @@ fn main() -> Result<()> {
                     if matched.is_empty() {
                         println!("No matching skills found for task: {}", task);
                     } else {
-                        println!("Found {} matching skill(s) for task '{}':\n", matched.len(), task);
+                        println!(
+                            "Found {} matching skill(s) for task '{}':\n",
+                            matched.len(),
+                            task
+                        );
                         for (i, skill) in matched.iter().take(limit).enumerate() {
-                            println!("{}. {} (confidence: {:.2}, success: {:.1}%)",
+                            println!(
+                                "{}. {} (confidence: {:.2}, success: {:.1}%)",
                                 i + 1,
                                 skill.bundle.name,
                                 skill.confidence_score * 100.0,
-                                skill.bundle.success_rate * 100.0);
+                                skill.bundle.success_rate * 100.0
+                            );
                             println!("   Description: {}", skill.bundle.description);
                             println!("   Recommendations:");
                             for rec in &skill.usage_recommendations {
@@ -701,7 +769,10 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-                SkillCommands::Apply { skill_id, task_description } => {
+                SkillCommands::Apply {
+                    skill_id,
+                    task_description,
+                } => {
                     let distiller = zn_evolve::distiller::create_default_distiller(&project)?;
 
                     // Create a mock execution plan to demonstrate skill application
@@ -721,6 +792,8 @@ fn main() -> Result<()> {
                         workspace_record: None,
                         verification_actions: vec![],
                         finish_branch_automation: None,
+                        execution_path: zn_types::SubagentExecutionPath::default(),
+                        bridge_address: None,
                     };
 
                     match distiller.apply_skill_to_plan(&skill_id, &mut plan) {
@@ -749,9 +822,16 @@ fn main() -> Result<()> {
                 MemoryCommands::Init => {
                     let _manager = create_memory_manager(&project)?;
                     let _ = create_default_searcher(&project)?;
-                    println!("Memory system initialized at: {}/.zero_nine/memory/", project.display());
+                    println!(
+                        "Memory system initialized at: {}/.zero_nine/memory/",
+                        project.display()
+                    );
                 }
-                MemoryCommands::Add { target, content, section } => {
+                MemoryCommands::Add {
+                    target,
+                    content,
+                    section,
+                } => {
                     let mut manager = create_memory_manager(&project)?;
                     let memory_target = if target.to_lowercase() == "memory" {
                         MemoryTarget::Memory
@@ -804,7 +884,8 @@ fn main() -> Result<()> {
                     } else {
                         println!("Found {} session(s) matching '{}':\n", results.total, query);
                         for (i, result) in results.results.iter().enumerate() {
-                            println!("{}. [{}] {} - {} ({}) [score: {:.2}]",
+                            println!(
+                                "{}. [{}] {} - {} ({}) [score: {:.2}]",
                                 i + 1,
                                 result.session_type,
                                 result.goal,
@@ -823,7 +904,8 @@ fn main() -> Result<()> {
                     } else {
                         println!("Recent {} session(s):\n", sessions.len());
                         for (i, session) in sessions.iter().enumerate() {
-                            println!("{}. [{}] {} - {} ({})",
+                            println!(
+                                "{}. [{}] {} - {} ({})",
                                 i + 1,
                                 session.session_type,
                                 session.goal,
@@ -838,7 +920,8 @@ fn main() -> Result<()> {
                     let stats = searcher.get_stats()?;
                     println!("Session Statistics:");
                     println!("  Total Sessions: {}", stats.total_sessions);
-                    println!("  Successful Sessions: {} ({:.1}%)",
+                    println!(
+                        "  Successful Sessions: {} ({:.1}%)",
                         stats.successful_sessions,
                         stats.success_rate * 100.0
                     );
@@ -852,7 +935,10 @@ fn main() -> Result<()> {
             match command {
                 McpCommands::Init => {
                     let client = zn_bridge::mcp_client::load_or_create_mcp_config(&project)?;
-                    println!("MCP system initialized at: {}/.zero_nine/mcp_config.yaml", project.display());
+                    println!(
+                        "MCP system initialized at: {}/.zero_nine/mcp_config.yaml",
+                        project.display()
+                    );
                     println!("Configured servers: {:?}", client.get_server_names());
                 }
                 McpCommands::List { detailed } => {
@@ -876,7 +962,8 @@ fn main() -> Result<()> {
                 McpCommands::Call { server, tool, args } => {
                     let client = zn_bridge::mcp_client::load_or_create_mcp_config(&project)?;
                     let args_value: serde_json::Value = if let Some(args_str) = args {
-                        serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({ "raw": args_str }))
+                        serde_json::from_str(&args_str)
+                            .unwrap_or_else(|_| serde_json::json!({ "raw": args_str }))
                     } else {
                         serde_json::json!({})
                     };
@@ -890,7 +977,10 @@ fn main() -> Result<()> {
                             if res.success {
                                 println!("Success! Result: {:?}", res.content);
                             } else {
-                                println!("Tool execution failed: {}", res.error.unwrap_or_default());
+                                println!(
+                                    "Tool execution failed: {}",
+                                    res.error.unwrap_or_default()
+                                );
                             }
                         }
                         Err(e) => {
@@ -903,7 +993,12 @@ fn main() -> Result<()> {
         Commands::Cron { command } => {
             let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match command {
-                CronCommands::Schedule { id, cron, description, expire_after_days } => {
+                CronCommands::Schedule {
+                    id,
+                    cron,
+                    description,
+                    expire_after_days,
+                } => {
                     let mut scheduler = zn_loop::cron_scheduler::CronScheduler::new(&project)?;
                     let job = zn_loop::cron_scheduler::create_recurring_job(
                         &id,
@@ -918,7 +1013,11 @@ fn main() -> Result<()> {
                     println!("  Description: {}", description);
                     println!("  Expires after: {} days", expire_after_days);
                 }
-                CronCommands::Remind { id, at, description } => {
+                CronCommands::Remind {
+                    id,
+                    at,
+                    description,
+                } => {
                     let mut scheduler = zn_loop::cron_scheduler::CronScheduler::new(&project)?;
 
                     // Parse the scheduled time (supports formats like "2024-01-15T10:30:00" or "10:30")
@@ -932,7 +1031,10 @@ fn main() -> Result<()> {
                     );
                     scheduler.schedule(job)?;
                     println!("Scheduled one-shot reminder: {}", id);
-                    println!("  Scheduled at: {}", scheduled_at.format("%Y-%m-%d %H:%M:%S"));
+                    println!(
+                        "  Scheduled at: {}",
+                        scheduled_at.format("%Y-%m-%d %H:%M:%S")
+                    );
                     println!("  Description: {}", description);
                 }
                 CronCommands::Cancel { id } => {
@@ -953,7 +1055,9 @@ fn main() -> Result<()> {
                         for job in jobs {
                             let status = if job.enabled { "enabled" } else { "disabled" };
                             let job_type = match &job.job_type {
-                                zn_loop::cron_scheduler::JobType::Recurring { expire_after_days } => {
+                                zn_loop::cron_scheduler::JobType::Recurring {
+                                    expire_after_days,
+                                } => {
                                     format!("recurring ({} days)", expire_after_days.unwrap_or(7))
                                 }
                                 zn_loop::cron_scheduler::JobType::OneShot { scheduled_at } => {
@@ -985,8 +1089,18 @@ fn main() -> Result<()> {
         Commands::Subagent { command } => {
             let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             match command {
-                SubagentCommands::Dispatch { proposal, task, role, context } => {
-                    let dispatcher = zn_exec::subagent_dispatcher::create_dispatcher(&project, &proposal, &task)?;
+                SubagentCommands::Dispatch {
+                    proposal,
+                    task,
+                    role,
+                    context,
+                } => {
+                    let dispatcher = zn_exec::subagent_dispatcher::create_dispatcher(
+                        &project,
+                        &proposal,
+                        &task,
+                        vec![],
+                    )?;
 
                     // Load context files if provided
                     let context_files = if let Some(ctx) = context {
@@ -1034,7 +1148,11 @@ fn main() -> Result<()> {
                             .collect();
                         entries.sort_by_key(|e| e.file_name());
 
-                        println!("Dispatch history for proposal {} ({} entries):\n", proposal, entries.len());
+                        println!(
+                            "Dispatch history for proposal {} ({} entries):\n",
+                            proposal,
+                            entries.len()
+                        );
                         for entry in entries {
                             println!("  - {}", entry.file_name().to_string_lossy());
                         }
@@ -1050,7 +1168,8 @@ fn main() -> Result<()> {
                         println!("No recovery ledger found for task: {}", task);
                     } else {
                         let content = std::fs::read_to_string(&ledger_path)?;
-                        let ledger: zn_types::SubagentRecoveryLedger = serde_json::from_str(&content)?;
+                        let ledger: zn_types::SubagentRecoveryLedger =
+                            serde_json::from_str(&content)?;
 
                         println!("Recovery Ledger for task {}:", task);
                         println!("  Records: {}", ledger.records.len());
@@ -1097,30 +1216,39 @@ fn main() -> Result<()> {
 
                     for entry in entries {
                         if detailed {
-                            println!("  {:?}: {} ({:?})",
-                                entry.action,
-                                entry.authorization,
-                                entry.risk_level
+                            println!(
+                                "  {:?}: {} ({:?})",
+                                entry.action, entry.authorization, entry.risk_level
                             );
                             if !entry.conditions.is_empty() {
                                 println!("    Conditions: {:?}", entry.conditions);
                             }
                         } else {
-                            println!("  {:?} - {:?} [{}]",
+                            println!(
+                                "  {:?} - {:?} [{}]",
                                 entry.action,
                                 entry.risk_level,
                                 match &entry.authorization {
                                     zn_exec::governance::AuthorizationRequirement::None => "auto",
                                     zn_exec::governance::AuthorizationRequirement::Log => "log",
-                                    zn_exec::governance::AuthorizationRequirement::Confirm => "confirm",
-                                    zn_exec::governance::AuthorizationRequirement::Approval { .. } => "approval",
-                                    zn_exec::governance::AuthorizationRequirement::Blocked { .. } => "blocked",
+                                    zn_exec::governance::AuthorizationRequirement::Confirm =>
+                                        "confirm",
+                                    zn_exec::governance::AuthorizationRequirement::Approval {
+                                        ..
+                                    } => "approval",
+                                    zn_exec::governance::AuthorizationRequirement::Blocked {
+                                        ..
+                                    } => "blocked",
                                 }
                             );
                         }
                     }
                 }
-                GovernanceCommands::Ticket { action, description, risk } => {
+                GovernanceCommands::Ticket {
+                    action,
+                    description,
+                    risk,
+                } => {
                     let engine = zn_exec::governance::PolicyEngine::new(&project)?;
 
                     let risk_level = match risk.to_lowercase().as_str() {
@@ -1153,14 +1281,17 @@ fn main() -> Result<()> {
                         }
                     }
                 }
-                GovernanceCommands::Approve { ticket_id, approver } => {
+                GovernanceCommands::Approve {
+                    ticket_id,
+                    approver,
+                } => {
                     // Load tickets and find the one to approve
                     let engine = zn_exec::governance::PolicyEngine::new(&project)?;
                     let mut tickets = engine.load_pending_tickets()?;
 
                     if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
                         ticket.approve(&approver);
-                        // Re-save all tickets (in production, would update specific ticket)
+                        engine.save_ticket(ticket)?;
                         println!("Ticket {} approved by {}", ticket_id, approver);
                         println!("{}", zn_exec::governance::render_approval_ticket(ticket));
                     } else {
@@ -1173,6 +1304,7 @@ fn main() -> Result<()> {
 
                     if let Some(ticket) = tickets.iter_mut().find(|t| t.id == ticket_id) {
                         ticket.reject(&reason);
+                        engine.save_ticket(ticket)?;
                         println!("Ticket {} rejected: {}", ticket_id, reason);
                         println!("{}", zn_exec::governance::render_approval_ticket(ticket));
                     } else {
@@ -1202,14 +1334,28 @@ fn main() -> Result<()> {
                     } else {
                         println!("Imported {} issue(s) as proposal(s):\n", imported.len());
                         for item in imported {
-                            println!("  - {} -> {} ({})",
-                                item.source, item.proposal.title, item.proposal.id);
+                            println!(
+                                "  - {} -> {} ({})",
+                                item.source, item.proposal.title, item.proposal.id
+                            );
                         }
                     }
                 }
-                GithubCommands::CreatePR { branch, title, body, base } => {
-                    let body_text = body.unwrap_or_else(|| format!("Generated by Zero_Nine for {}", branch));
-                    match zn_host::create_pull_request(None, &branch, &title, &body_text, base.as_deref()) {
+                GithubCommands::CreatePR {
+                    branch,
+                    title,
+                    body,
+                    base,
+                } => {
+                    let body_text =
+                        body.unwrap_or_else(|| format!("Generated by Zero_Nine for {}", branch));
+                    match zn_host::create_pull_request(
+                        None,
+                        &branch,
+                        &title,
+                        &body_text,
+                        base.as_deref(),
+                    ) {
                         Ok(result) => {
                             println!("PR created successfully!");
                             println!("  URL: {}", result.pr_url);
@@ -1255,7 +1401,8 @@ fn main() -> Result<()> {
         }
         Commands::Observe { command } => {
             let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let (_emitter, aggregator, query) = zn_exec::observability::create_default_observability(&project)?;
+            let (_emitter, aggregator, query) =
+                zn_exec::observability::create_default_observability(&project)?;
 
             match command {
                 ObserveCommands::Events { event_type, limit } => {
@@ -1263,13 +1410,19 @@ fn main() -> Result<()> {
                     if events.is_empty() {
                         println!("No events found for type: {}", event_type);
                     } else {
-                        println!("Found {} event(s) of type '{}':\n", events.len(), event_type);
+                        println!(
+                            "Found {} event(s) of type '{}':\n",
+                            events.len(),
+                            event_type
+                        );
                         for event in &events {
-                            println!("  [{}] {} (proposal: {:?}, task: {:?})",
+                            println!(
+                                "  [{}] {} (proposal: {:?}, task: {:?})",
                                 event.ts.format("%Y-%m-%d %H:%M:%S"),
                                 event.event,
                                 event.proposal_id,
-                                event.task_id);
+                                event.task_id
+                            );
                         }
                     }
                 }
@@ -1278,12 +1431,18 @@ fn main() -> Result<()> {
                     if events.is_empty() {
                         println!("No events found for proposal: {}", proposal_id);
                     } else {
-                        println!("Found {} event(s) for proposal '{}':\n", events.len(), proposal_id);
+                        println!(
+                            "Found {} event(s) for proposal '{}':\n",
+                            events.len(),
+                            proposal_id
+                        );
                         for event in &events {
-                            println!("  [{}] {} (task: {:?})",
+                            println!(
+                                "  [{}] {} (task: {:?})",
                                 event.ts.format("%Y-%m-%d %H:%M:%S"),
                                 event.event,
-                                event.task_id);
+                                event.task_id
+                            );
                         }
                     }
                 }
@@ -1318,22 +1477,66 @@ fn main() -> Result<()> {
                     } else {
                         println!("Recent {} metric(s):\n", metrics.len());
                         for m in metrics {
-                            println!("  Task: {} | Latency: {}ms | Success: {} | Tokens: {}",
-                                m.task_id, m.latency_ms, m.success, m.token_usage);
+                            println!(
+                                "  Task: {} | Latency: {}ms | Success: {} | Tokens: {}",
+                                m.task_id, m.latency_ms, m.success, m.token_usage
+                            );
                         }
                     }
                 }
             }
+        }
+        Commands::BridgeServer { port } => {
+            use std::net::SocketAddr;
+            use std::sync::Arc;
+            use zn_bridge::{
+                BridgeConfig, BridgeServer, DispatchHandler, EvidenceHandler, StatusHandler,
+            };
+            use zn_exec::LocalCliHandler;
+
+            let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
+            let config = BridgeConfig {
+                bind_addr: addr,
+                ..Default::default()
+            };
+
+            let handler = LocalCliHandler::new(&project);
+
+            println!("Starting gRPC bridge server on {}", addr);
+            println!("Project root: {}", project.display());
+            println!("Press Ctrl+C to stop");
+
+            let server = BridgeServer::new(config)
+                .with_dispatch_handler(handler.clone())
+                .with_status_handler(handler.clone())
+                .with_evidence_handler(handler);
+
+            // Run the server (this blocks)
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(server.run())?;
         }
     }
     Ok(())
 }
 
 /// Print span tree recursively
-fn print_span_tree(tree: &zn_exec::observability::TraceTree, span_id: &str, _is_first: bool, is_last: bool, prefix: &str) {
+fn print_span_tree(
+    tree: &zn_exec::observability::TraceTree,
+    span_id: &str,
+    _is_first: bool,
+    is_last: bool,
+    prefix: &str,
+) {
     if let Some(span) = tree.all_spans.get(span_id) {
         let connector = if is_last { "└─" } else { "├─" };
-        println!("  {} {} {} ({}ms)", prefix, connector, span.event_type, span.latency_ms.unwrap_or(0));
+        println!(
+            "  {} {} {} ({}ms)",
+            prefix,
+            connector,
+            span.event_type,
+            span.latency_ms.unwrap_or(0)
+        );
 
         let child_prefix = format!("{}{}", prefix, if is_last { "  " } else { "│ " });
         for (i, child_id) in span.child_span_ids.iter().enumerate() {
@@ -1352,7 +1555,9 @@ fn parse_datetime(s: &str) -> Result<chrono::DateTime<Local>> {
 
     // Try YYYY-MM-DD HH:MM:SS format
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Ok(Local.from_local_datetime(&dt).single()
+        return Ok(Local
+            .from_local_datetime(&dt)
+            .single()
             .ok_or_else(|| anyhow!("Invalid datetime: {}", s))?);
     }
 
@@ -1360,7 +1565,9 @@ fn parse_datetime(s: &str) -> Result<chrono::DateTime<Local>> {
     if let Ok(dt) = chrono::NaiveTime::parse_from_str(s, "%H:%M") {
         let today = Local::now().date_naive();
         let naive_dt = chrono::NaiveDateTime::new(today, dt);
-        let local_dt = Local.from_local_datetime(&naive_dt).single()
+        let local_dt = Local
+            .from_local_datetime(&naive_dt)
+            .single()
             .ok_or_else(|| anyhow!("Invalid datetime: {}", s))?;
 
         // If time has passed today, schedule for tomorrow
@@ -1372,7 +1579,9 @@ fn parse_datetime(s: &str) -> Result<chrono::DateTime<Local>> {
         return Ok(scheduled);
     }
 
-    Err(anyhow!("Unable to parse datetime. Supported formats: RFC3339, YYYY-MM-DD HH:MM:SS, HH:MM"))
+    Err(anyhow!(
+        "Unable to parse datetime. Supported formats: RFC3339, YYYY-MM-DD HH:MM:SS, HH:MM"
+    ))
 }
 
 /// Parse action type from string
@@ -1425,6 +1634,9 @@ fn print_skill_summary(skill: &SkillSummary, detailed: bool) {
             skill.name, skill.description, skill.version, skill.category, skill.valid
         );
     } else {
-        println!("  {} (v{}) - {} [{}]", skill.name, skill.version, skill.description, skill.category);
+        println!(
+            "  {} (v{}) - {} [{}]",
+            skill.name, skill.version, skill.description, skill.category
+        );
     }
 }

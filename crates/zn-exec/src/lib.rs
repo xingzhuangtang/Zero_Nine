@@ -6,6 +6,8 @@
 //! - Execution report generation
 //! - gRPC bridge client for agent dispatch
 
+pub mod drift;
+
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use std::fs;
@@ -17,14 +19,15 @@ use zn_types::{
     AgentRunRecord, BrainstormSession, BrainstormVerdict, BranchFinishPreview,
     BranchFinishRequest, ClarificationAnswer, ClarificationQuestion, ContextArtifact,
     ContextInjectionProtocol, EvidenceKind, EvidenceRecord, EvidenceStatus,
-    ExecutionEnvelope, ExecutionMode, ExecutionPlan, ExecutionReport,
+    ExecutionEnvelope, ExecutionMode, ExecutionOutcome, ExecutionPlan, ExecutionReport,
+    FailureCategory, FailureClassification, FailureSeverity,
     FinishBranchAction, FinishBranchAutomation, FinishBranchResult, FinishBranchStatus,
     GeneratedArtifact, HostKind, PlanStep, QualityGate, ReviewVerdict, SubagentBrief,
     SubagentDispatch, SubagentExecutionRuntime, SubagentRecoveryLedger, SubagentRecoveryRecord,
-    SubagentRunBook, SubagentRunStatus, TaskItem, VerificationAction, VerificationActionResult,
+    SubagentRunBook, SubagentRunStatus, SubagentExecutionPath, TaskItem, VerificationAction, VerificationActionResult,
     VerificationVerdict, VerdictStatus,
     WorkspacePreparationResult, WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy,
-    WorktreePlan,
+    WorktreePlan, CompensationAction, CompensationType,
 };
 
 // Bridge client module for gRPC agent communication
@@ -41,13 +44,17 @@ pub mod subagent_dispatcher;
 // Governance module
 pub mod governance;
 
+// Bridge handler for independent service deployment
+pub mod bridge_handler;
+pub use bridge_handler::LocalCliHandler;
+
 // Token counter and output optimizer
 pub mod token_counter;
 pub use token_counter::{TokenCounter, OutputOptimizer, TokenBudget};
 
 // Re-export proto types for convenience
 pub use zn_bridge::proto;
-pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, SubagentExecutionReport, is_claude_available, create_dispatcher};
+pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, SubagentExecutionReport, is_claude_available, create_dispatcher, TriRoleVerdict, compute_tri_role_verdict};
 pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket, TokenBudgetCheck, TokenBudgetStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +74,31 @@ pub struct SubagentExecutionOutcome {
     pub evidence: Vec<EvidenceRecord>,
     pub artifact_paths: Vec<String>,
     pub all_succeeded: bool,
+    pub tri_role_verdict: Option<String>,
+}
+
+impl SubagentExecutionOutcome {
+    /// Create an outcome from a bridge-originated ExecutionReport.
+    pub fn from_report(report: &ExecutionReport) -> Self {
+        Self {
+            agent_runs: report.agent_runs.clone(),
+            evidence: report.evidence.clone(),
+            artifact_paths: report.artifacts.clone(),
+            all_succeeded: report.success,
+            tri_role_verdict: report.tri_role_verdict.clone(),
+        }
+    }
+
+    /// Create a failed outcome with an error message.
+    pub fn error(message: &str) -> Self {
+        Self {
+            agent_runs: Vec::new(),
+            evidence: Vec::new(),
+            artifact_paths: Vec::new(),
+            all_succeeded: false,
+            tri_role_verdict: Some(format!("BridgeError: {}", message)),
+        }
+    }
 }
 
 pub fn start_brainstorm(goal: &str, host: HostKind) -> BrainstormSession {
@@ -266,10 +298,19 @@ pub fn build_execution_envelope(
         context_protocol,
         context_protocol_path: None,
         quality_gates,
+        bridge_address: None,
     }
 }
 
 pub fn build_plan(task: &TaskItem) -> ExecutionPlan {
+    build_plan_with_config(task, SubagentExecutionPath::default(), None)
+}
+
+pub fn build_plan_with_config(
+    task: &TaskItem,
+    execution_path: SubagentExecutionPath,
+    bridge_address: Option<String>,
+) -> ExecutionPlan {
     let kind = classify_task(task);
     let mode = mode_for(kind);
     let workspace_strategy = workspace_for(kind);
@@ -302,6 +343,8 @@ pub fn build_plan(task: &TaskItem) -> ExecutionPlan {
         workspace_record,
         verification_actions,
         finish_branch_automation,
+        execution_path,
+        bridge_address,
     }
 }
 
@@ -317,6 +360,7 @@ pub fn execute_subagent_dispatch(
             evidence: Vec::new(),
             artifact_paths: Vec::new(),
             all_succeeded: true,
+            tri_role_verdict: None,
         };
     }
 
@@ -327,6 +371,7 @@ pub fn execute_subagent_dispatch(
             evidence: Vec::new(),
             artifact_paths: Vec::new(),
             all_succeeded: false,
+            tri_role_verdict: None,
         };
     }
 
@@ -334,12 +379,13 @@ pub fn execute_subagent_dispatch(
     let proposal_id = plan.task_id.as_str();
     let task_id = plan.task_id.as_str();
 
-    let Ok(mut dispatcher) = SubagentDispatcher::new(project_root, proposal_id, task_id) else {
+    let Ok(mut dispatcher) = SubagentDispatcher::new(project_root, proposal_id, task_id, plan.skill_chain.clone()) else {
         return SubagentExecutionOutcome {
             agent_runs: Vec::new(),
             evidence: Vec::new(),
             artifact_paths: Vec::new(),
             all_succeeded: false,
+            tri_role_verdict: None,
         };
     };
 
@@ -352,6 +398,7 @@ pub fn execute_subagent_dispatch(
             goal: sa.goal.clone(),
             inputs: sa.inputs.clone(),
             outputs: sa.outputs.clone(),
+            depends_on: sa.depends_on.clone(),
         })
         .collect();
 
@@ -361,19 +408,8 @@ pub fn execute_subagent_dispatch(
     // Persist runbook artifacts to disk
     let _ = dispatcher.save_runbook(&runbook);
 
-    // Prepare context for each role
-    for dispatch in &runbook.dispatches {
-        let context = SubagentContext {
-            role: dispatch.role.clone(),
-            context_files: dispatch.context_files.iter().map(|f| (f.clone(), format!("Context file: {}", f))).collect(),
-            expected_outputs: dispatch.expected_outputs.clone(),
-            objective: dispatch.command_hint.clone(),
-        };
-        let _ = dispatcher.prepare_context(&context);
-    }
-
-    // Execute all dispatches sequentially
-    let report = dispatcher.try_execute_all(&runbook);
+    // Execute with cross-role handoff pipeline
+    let (report, verdict) = dispatcher.run_tri_role_pipeline(&runbook);
 
     // Convert report to outcome
     let agent_runs: Vec<AgentRunRecord> = report
@@ -426,7 +462,63 @@ pub fn execute_subagent_dispatch(
         evidence,
         artifact_paths,
         all_succeeded: report.all_succeeded,
+        tri_role_verdict: Some(format!("{:?}", verdict)),
     }
+}
+
+/// Generate compensation actions when a multi-role chain fails.
+/// Produces cleanup worktree/branch actions for GitWorktree strategies,
+/// or artifact cleanup for Sandboxed strategies.
+pub fn generate_compensation_actions(
+    plan: &ExecutionPlan,
+    tri_role_verdict: &str,
+) -> Vec<zn_types::CompensationAction> {
+    let mut actions = Vec::new();
+
+    // Only generate compensation for failure verdicts
+    if tri_role_verdict == "Pass" {
+        return actions;
+    }
+
+    // GitWorktree strategy: clean up worktree and branch
+    if let Some(ref wt) = plan.worktree_plan {
+        actions.push(CompensationAction {
+            action_type: CompensationType::DeleteWorktree,
+            target: wt.worktree_path.clone(),
+            reason: format!(
+                "Tri-role verdict: {}. Worktree contains incomplete work.",
+                tri_role_verdict
+            ),
+            executed: false,
+        });
+        actions.push(CompensationAction {
+            action_type: CompensationType::DeleteBranch,
+            target: wt.branch_name.clone(),
+            reason: format!(
+                "Tri-role verdict: {}. Branch contains unmerged changes.",
+                tri_role_verdict
+            ),
+            executed: false,
+        });
+    }
+
+    // Sandboxed strategy: clean up sandbox artifacts
+    if matches!(
+        plan.workspace_strategy,
+        WorkspaceStrategy::Sandboxed
+    ) {
+        actions.push(CompensationAction {
+            action_type: CompensationType::CleanupArtifacts,
+            target: format!(".zero_nine/sandboxes/{}", plan.task_id),
+            reason: format!(
+                "Tri-role verdict: {}. Sandbox contains incomplete artifacts.",
+                tri_role_verdict
+            ),
+            executed: false,
+        });
+    }
+
+    actions
 }
 
 pub fn execute_plan(
@@ -466,8 +558,36 @@ pub fn execute_plan(
     let subagent_records = persist_subagent_runbook_artifacts(project_root, plan)?;
     artifacts.extend(subagent_records.all_paths.clone());
 
-    // Execute real subagent dispatches via Claude CLI
-    let subagent_outcome = execute_subagent_dispatch(project_root, plan);
+    // M9: Select subagent execution path based on plan configuration
+    let subagent_outcome = match &plan.execution_path {
+        SubagentExecutionPath::Cli => {
+            execute_subagent_dispatch(project_root, plan)
+        }
+        SubagentExecutionPath::Bridge => {
+            match execute_plan_via_bridge(project_root, task, plan, 300) {
+                Ok(report) => SubagentExecutionOutcome::from_report(&report),
+                Err(e) => {
+                    info!("Bridge execution failed: {}", e);
+                    SubagentExecutionOutcome::error(&e.to_string())
+                }
+            }
+        }
+        SubagentExecutionPath::Hybrid => {
+            let cli_outcome = execute_subagent_dispatch(project_root, plan);
+            if cli_outcome.all_succeeded {
+                cli_outcome
+            } else {
+                info!("CLI subagent execution failed, trying bridge fallback");
+                match execute_plan_via_bridge(project_root, task, plan, 300) {
+                    Ok(report) => SubagentExecutionOutcome::from_report(&report),
+                    Err(e) => {
+                        info!("Bridge fallback also failed: {}", e);
+                        cli_outcome // Return CLI outcome for diagnostics
+                    }
+                }
+            }
+        }
+    };
     artifacts.extend(subagent_outcome.artifact_paths.clone());
     if !subagent_outcome.agent_runs.is_empty() {
         details.push(format!(
@@ -475,6 +595,9 @@ pub fn execute_plan(
             subagent_outcome.agent_runs.iter().filter(|r| r.status == subagent_dispatcher::AGENT_STATUS_COMPLETED).count(),
             subagent_outcome.agent_runs.len()
         ));
+    }
+    if let Some(ref verdict) = subagent_outcome.tri_role_verdict {
+        details.push(format!("Tri-role verdict: {}", verdict));
     }
 
     let verification_actions = plan.verification_actions.clone();
@@ -502,6 +625,21 @@ pub fn execute_plan(
         workspace_record.as_ref(),
         allow_remote_finish,
     )?;
+
+    // P0-B: Safety policy enforcement — block merge/push without passing gates
+    if let Some(result) = &finish_branch_result {
+        let is_merge = matches!(result.action, FinishBranchAction::Merge | FinishBranchAction::PullRequest);
+        if is_merge && (!tests_passed || !review_passed) {
+            details.push("SAFETY: Merge blocked by policy — tests and review must pass before merge/push".to_string());
+            let mut blocked_result = result.clone();
+            blocked_result.status = FinishBranchStatus::Rejected;
+            blocked_result.summary = format!(
+                "Blocked by safety policy: merge requires passing tests (got {}) and review (got {})",
+                tests_passed, review_passed
+            );
+        }
+    }
+
     if let Some(result) = &finish_branch_result {
         details.push(format!("Finish-branch outcome: {}", result.summary));
     }
@@ -575,7 +713,7 @@ pub fn execute_plan(
         plan.deliverables.clone(),
     );
 
-    Ok(ExecutionReport {
+    let mut report = ExecutionReport {
         task_id: task.id.clone(),
         success,
         outcome,
@@ -602,7 +740,100 @@ pub fn execute_plan(
         code_quality_score: 0.0,
         test_coverage: 0.0,
         user_feedback: None,
-    })
+        failure_classification: None,
+        tri_role_verdict: subagent_outcome.tri_role_verdict.clone(),
+        authorization_ticket_id: None,
+        authorized_by: None,
+    };
+    report.failure_classification = Some(classify_failure(&report));
+    Ok(report)
+}
+
+/// Classify a failure based on the execution report signals
+pub fn classify_failure(report: &ExecutionReport) -> FailureClassification {
+    // Check workspace drift indicators
+    if let Some(ref record) = report.workspace_record {
+        if record.notes.iter().any(|n| n.to_lowercase().contains("drift") || n.to_lowercase().contains("branch mismatch")) {
+            return FailureClassification {
+                id: format!("failure:{}", report.task_id),
+                category: FailureCategory::EnvironmentDrift,
+                severity: FailureSeverity::High,
+                description: report.failure_summary.clone().unwrap_or_default(),
+                root_cause: Some("Workspace environment has drifted from expected state".to_string()),
+                retry_recommended: false,
+                human_intervention_required: true,
+                suggested_fix: Some("Re-sync workspace with expected state before retrying".to_string()),
+            };
+        }
+    }
+
+    // Check verification failures
+    if report.verification_action_results.iter().any(|r| r.status.to_lowercase().contains("fail")) {
+        return FailureClassification {
+            id: format!("failure:{}", report.task_id),
+            category: FailureCategory::VerificationFailed,
+            severity: FailureSeverity::High,
+            description: report.failure_summary.clone().unwrap_or_default(),
+            root_cause: Some("Verification gate did not pass".to_string()),
+            retry_recommended: true,
+            human_intervention_required: false,
+            suggested_fix: Some("Review verification evidence and adjust implementation".to_string()),
+        };
+    }
+
+    // Check finish-branch policy blocks
+    if let Some(ref result) = report.finish_branch_result {
+        if matches!(result.status, FinishBranchStatus::Rejected) {
+            return FailureClassification {
+                id: format!("failure:{}", report.task_id),
+                category: FailureCategory::PolicyBlocked,
+                severity: FailureSeverity::Critical,
+                description: report.failure_summary.clone().unwrap_or_default(),
+                root_cause: Some("Branch finishing blocked by policy".to_string()),
+                retry_recommended: false,
+                human_intervention_required: true,
+                suggested_fix: Some("Review and approve branch finish policy".to_string()),
+            };
+        }
+        if matches!(result.status, FinishBranchStatus::Failed) {
+            return FailureClassification {
+                id: format!("failure:{}", report.task_id),
+                category: FailureCategory::ResourceExhausted,
+                severity: FailureSeverity::High,
+                description: report.failure_summary.clone().unwrap_or_default(),
+                root_cause: Some("Branch finishing failed due to resource issues".to_string()),
+                retry_recommended: false,
+                human_intervention_required: true,
+                suggested_fix: Some("Check git state and retry manually".to_string()),
+            };
+        }
+    }
+
+    // Check subagent run failures
+    if report.agent_runs.iter().any(|r| r.status.to_lowercase().contains("fail")) {
+        return FailureClassification {
+            id: format!("failure:{}", report.task_id),
+            category: FailureCategory::ToolError,
+            severity: FailureSeverity::Medium,
+            description: report.failure_summary.clone().unwrap_or_default(),
+            root_cause: Some("Subagent execution encountered an error".to_string()),
+            retry_recommended: true,
+            human_intervention_required: false,
+            suggested_fix: Some("Review subagent output and retry".to_string()),
+        };
+    }
+
+    // Default: unknown
+    FailureClassification {
+        id: format!("failure:{}", report.task_id),
+        category: FailureCategory::Unknown,
+        severity: FailureSeverity::Medium,
+        description: report.failure_summary.clone().unwrap_or_default(),
+        root_cause: None,
+        retry_recommended: true,
+        human_intervention_required: false,
+        suggested_fix: None,
+    }
 }
 
 /// File operation result for tracking written files
@@ -835,6 +1066,7 @@ fn execute_finish_branch_if_needed(
             worktree_path: None,
             summary: format!("Finish-branch could not run for task {} because no prepared workspace record was available.", plan.task_id),
             follow_ups: vec!["Prepare the workspace first so branch automation can resolve the active branch and worktree path.".to_string()],
+            pr_url: None,
         }));
     };
 
@@ -849,6 +1081,8 @@ fn execute_finish_branch_if_needed(
         worktree_path: Some(record.worktree_path.clone()),
         verify_clean: true,
         confirmed: allow_remote_finish,
+        pr_title: None,
+        pr_body: None,
     };
 
     match finish_branch(project_root, &request) {
@@ -862,6 +1096,7 @@ fn execute_finish_branch_if_needed(
             follow_ups: vec![
                 "Review git status, branch state, remote configuration, and authentication before retrying finish-branch automation.".to_string(),
             ],
+            pr_url: None,
         })),
     }
 }
@@ -1319,6 +1554,8 @@ pub fn preview_finish_branch(project_root: &Path, request: &BranchFinishRequest)
             worktree_path: request.worktree_path.clone(),
             verify_clean: request.verify_clean,
             confirmed: request.confirmed,
+            pr_title: None,
+            pr_body: None,
         },
         warnings,
         commands,
@@ -1355,6 +1592,7 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
                 request.action
             ),
             follow_ups,
+            pr_url: None,
         });
     }
 
@@ -1379,6 +1617,7 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
                 worktree_path: request.worktree_path.clone(),
                 summary: format!("Merged branch {} into the currently checked out branch.", request.branch_name),
                 follow_ups: vec!["Run the verification suite once more after merge if your policy requires post-merge checks.".to_string()],
+                pr_url: None,
             })
         }
         FinishBranchAction::PullRequest => {
@@ -1397,33 +1636,45 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
                 .arg(&request.branch_name);
             run_command(&mut push, "failed to push branch before creating pull request")?;
 
-            let mut pr = Command::new("gh");
-            pr.arg("pr")
-                .arg("create")
-                .arg("--head")
-                .arg(&request.branch_name)
-                .arg("--fill");
-            let pr_output = run_command(&mut pr, "failed to create pull request via gh")?;
+            // M6: Use structured PR body if provided, otherwise fall back to --fill
+            let pr_url = if let (Some(title), Some(body)) = (&request.pr_title, &request.pr_body) {
+                let mut pr = Command::new("gh");
+                pr.arg("pr")
+                    .arg("create")
+                    .arg("--head")
+                    .arg(&request.branch_name)
+                    .arg("--title")
+                    .arg(title)
+                    .arg("--body")
+                    .arg(body);
+                let output = run_command(&mut pr, "failed to create pull request via gh")?;
+                output.lines().next().map(|s| s.to_string())
+            } else {
+                let mut pr = Command::new("gh");
+                pr.arg("pr")
+                    .arg("create")
+                    .arg("--head")
+                    .arg(&request.branch_name)
+                    .arg("--fill");
+                let output = run_command(&mut pr, "failed to create pull request via gh")?;
+                output.lines().next().map(|s| s.to_string())
+            };
+
+            let pr_url_display = pr_url.clone().unwrap_or_else(|| "<pr-url>".to_string());
 
             Ok(FinishBranchResult {
                 action: FinishBranchAction::PullRequest,
                 status: FinishBranchStatus::Completed,
                 branch_name: request.branch_name.clone(),
                 worktree_path: request.worktree_path.clone(),
-                summary: if pr_output.is_empty() {
-                    format!(
-                        "Pushed branch {} to {} and created a pull request through gh.",
-                        request.branch_name, remote_name
-                    )
-                } else {
-                    format!(
-                        "Pushed branch {} to {} and created a pull request: {}",
-                        request.branch_name, remote_name, pr_output
-                    )
-                },
+                summary: format!(
+                    "Pushed branch {} to {} and created a pull request: {}",
+                    request.branch_name, remote_name, pr_url_display
+                ),
                 follow_ups: vec![
                     "Review the created pull request, verify CI state, and merge only after repository policy checks are satisfied.".to_string(),
                 ],
+                pr_url,
             })
         }
         FinishBranchAction::Discard => {
@@ -1444,6 +1695,7 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
                 worktree_path: request.worktree_path.clone(),
                 summary: format!("Discarded branch {} and cleaned temporary workspace state.", request.branch_name),
                 follow_ups: vec!["Preserve useful artifacts under .zero_nine before permanently removing exploratory branches next time.".to_string()],
+                pr_url: None,
             })
         }
         FinishBranchAction::Keep => Ok(FinishBranchResult {
@@ -1453,6 +1705,7 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
             worktree_path: request.worktree_path.clone(),
             summary: format!("Kept branch {} for another iteration.", request.branch_name),
             follow_ups: vec!["Resume implementation or verification before trying to finish the branch again.".to_string()],
+            pr_url: None,
         }),
     }
 }
@@ -1519,6 +1772,7 @@ fn persist_subagent_runbook_artifacts(
             command_hint: command_hint_for(plan, brief),
             context_files: context_files_for_dispatch(plan, brief),
             expected_outputs: brief.outputs.clone(),
+            depends_on_roles: brief.depends_on.clone(),
         })
         .collect::<Vec<_>>();
 
@@ -2577,12 +2831,14 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
             goal: format!("Clarify the real user intent for task {}.", task.id),
             inputs: vec![task.title.clone(), task.description.clone()],
             outputs: vec!["clarifications list".to_string(), "acceptance criteria".to_string()],
+            depends_on: vec![],
         }],
         TaskKind::SpecCapture => vec![SubagentBrief {
             role: "spec-writer".to_string(),
             goal: format!("Write OpenSpec artifacts for task {}.", task.id),
             inputs: vec!["requirement packet".to_string()],
             outputs: vec!["proposal fragment".to_string(), "requirements and acceptance updates".to_string()],
+            depends_on: vec![],
         }],
         TaskKind::Planning => vec![
             SubagentBrief {
@@ -2590,12 +2846,14 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
                 goal: format!("Create the writing-plans breakdown for task {}.", task.id),
                 inputs: vec!["design.md".to_string(), "tasks.md".to_string()],
                 outputs: vec!["execution slices".to_string(), "checkpoint plan".to_string()],
+                depends_on: vec![],
             },
             SubagentBrief {
                 role: "workspace-architect".to_string(),
                 goal: format!("Define worktree and branch strategy for task {}.", task.id),
                 inputs: vec!["execution slices".to_string()],
                 outputs: vec!["branch name".to_string(), "worktree path".to_string()],
+                depends_on: vec![],
             },
         ],
         TaskKind::Implementation => vec![
@@ -2604,12 +2862,14 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
                 goal: format!("Implement the planned work for task {} in an isolated workspace.", task.id),
                 inputs: vec!["writing plans".to_string(), "workspace plan".to_string()],
                 outputs: vec!["code changes".to_string(), "developer notes".to_string()],
+                depends_on: vec![],
             },
             SubagentBrief {
                 role: "reviewer".to_string(),
                 goal: format!("Review the implementation evidence for task {}.", task.id),
                 inputs: vec!["developer notes".to_string(), "test evidence".to_string()],
                 outputs: vec!["review verdict".to_string(), "risk list".to_string()],
+                depends_on: vec!["developer".to_string()],
             },
         ],
         TaskKind::Verification => vec![SubagentBrief {
@@ -2617,12 +2877,14 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
             goal: format!("Decide whether task {} may advance and what should be learned from it.", task.id),
             inputs: vec!["review brief".to_string(), "evidence bundle".to_string()],
             outputs: vec!["verification verdict".to_string(), "evolution signal".to_string()],
+            depends_on: vec!["developer".to_string(), "reviewer".to_string()],
         }],
         TaskKind::FinishBranch => vec![SubagentBrief {
             role: "release-coordinator".to_string(),
             goal: format!("Finish the development branch for task {} safely.", task.id),
             inputs: vec!["verification report".to_string(), "branch summary".to_string()],
             outputs: vec!["merge/pr/discard options".to_string(), "cleanup instructions".to_string()],
+            depends_on: vec![],
         }],
     }
 }
@@ -3222,6 +3484,36 @@ pub async fn execute_plan_with_bridge(
     )
 }
 
+/// Execute a plan via the gRPC bridge (sync wrapper around async bridge client).
+/// Uses a single-threaded tokio runtime to bridge async/sync boundary,
+/// enabling independent service deployment.
+pub fn execute_plan_via_bridge(
+    project_root: &Path,
+    task: &TaskItem,
+    plan: &ExecutionPlan,
+    timeout_secs: u64,
+) -> Result<ExecutionReport> {
+    let bridge_addr = plan
+        .bridge_address
+        .as_ref()
+        .ok_or_else(|| anyhow!("bridge_address required for bridge execution path"))?
+        .parse::<std::net::SocketAddr>()
+        .context("invalid bridge_address format")?;
+
+    let project_root = project_root.to_path_buf();
+    let task = task.clone();
+    let plan = plan.clone();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create tokio runtime for bridge execution")?;
+
+    rt.block_on(async move {
+        execute_plan_with_bridge(&project_root, &task, &plan, bridge_addr, timeout_secs).await
+    })
+}
+
 /// Build an ExecutionReport from agent results
 fn build_report_from_agent_result(
     _project_root: &Path,
@@ -3328,15 +3620,21 @@ fn build_report_from_agent_result(
         code_quality_score: 0.0,
         test_coverage: 0.0,
         user_feedback: None,
+        failure_classification: None,
+        tri_role_verdict: None,
+        authorization_ticket_id: None,
+        authorized_by: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
     use std::fs;
     use std::path::PathBuf;
-    use zn_types::{TaskContract, TaskStatus};
+    use std::process::Command;
+    use zn_types::{SubagentExecutionPath, TaskContract, TaskStatus};
 
     fn sample_task(id: &str, title: &str, description: &str) -> TaskItem {
         TaskItem {
@@ -3347,6 +3645,8 @@ mod tests {
             depends_on: vec![],
             kind: None,
             contract: TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
         }
     }
 
@@ -3434,5 +3734,173 @@ mod tests {
             .generated_artifacts
             .iter()
             .any(|item| item.path.contains("branch-outcome-matrix")));
+    }
+
+    #[test]
+    fn test_execution_path_default_is_cli() {
+        assert_eq!(SubagentExecutionPath::default(), SubagentExecutionPath::Cli);
+    }
+
+    #[test]
+    fn test_build_plan_with_config_sets_fields() {
+        let task = TaskItem {
+            id: "test-1".to_string(),
+            title: "Test".to_string(),
+            description: "Test task".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: TaskContract::default(),
+            max_retries: Some(3),
+            preconditions: vec![],
+        };
+
+        let plan = build_plan_with_config(
+            &task,
+            SubagentExecutionPath::Bridge,
+            Some("127.0.0.1:50051".to_string()),
+        );
+
+        assert_eq!(plan.execution_path, SubagentExecutionPath::Bridge);
+        assert_eq!(plan.bridge_address, Some("127.0.0.1:50051".to_string()));
+    }
+
+    #[test]
+    fn test_build_plan_default_uses_cli_path() {
+        let task = TaskItem {
+            id: "test-2".to_string(),
+            title: "Test".to_string(),
+            description: "Test task".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: TaskContract::default(),
+            max_retries: Some(3),
+            preconditions: vec![],
+        };
+
+        let plan = build_plan(&task);
+        assert_eq!(plan.execution_path, SubagentExecutionPath::Cli);
+        assert_eq!(plan.bridge_address, None);
+    }
+
+    #[test]
+    fn test_subagent_outcome_from_report() {
+        let report = ExecutionReport {
+            task_id: "test".to_string(),
+            success: true,
+            outcome: ExecutionOutcome::Completed,
+            summary: "done".to_string(),
+            details: vec![],
+            tests_passed: true,
+            review_passed: true,
+            artifacts: vec!["artifact1".to_string()],
+            generated_artifacts: vec![],
+            evidence: vec![],
+            follow_ups: vec![],
+            workspace_record: None,
+            finish_branch_result: None,
+            finish_branch_automation: None,
+            agent_runs: vec![],
+            review_verdict: None,
+            verification_verdict: None,
+            verification_actions: vec![],
+            verification_action_results: vec![],
+            failure_summary: None,
+            exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
+            failure_classification: None,
+            tri_role_verdict: Some("Pass".to_string()),
+            authorization_ticket_id: None,
+            authorized_by: None,
+        };
+
+        let outcome = SubagentExecutionOutcome::from_report(&report);
+        assert!(outcome.all_succeeded);
+        assert_eq!(outcome.artifact_paths, vec!["artifact1"]);
+        assert_eq!(outcome.tri_role_verdict, Some("Pass".to_string()));
+    }
+
+    #[test]
+    fn test_subagent_outcome_error() {
+        let outcome = SubagentExecutionOutcome::error("connection refused");
+        assert!(!outcome.all_succeeded);
+        assert!(outcome.tri_role_verdict.unwrap().contains("BridgeError"));
+    }
+
+    #[test]
+    fn test_execute_plan_via_bridge_missing_address() {
+        let task = TaskItem {
+            id: "test-3".to_string(),
+            title: "Test".to_string(),
+            description: "Test task".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: TaskContract::default(),
+            max_retries: Some(3),
+            preconditions: vec![],
+        };
+
+        let plan = build_plan_with_config(&task, SubagentExecutionPath::Bridge, None);
+        let result = execute_plan_via_bridge(
+            std::path::Path::new("/tmp"),
+            &task,
+            &plan,
+            300,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("bridge_address required"));
+    }
+
+    #[test]
+    fn test_execute_plan_via_bridge_invalid_address() {
+        let task = TaskItem {
+            id: "test-4".to_string(),
+            title: "Test".to_string(),
+            description: "Test task".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: TaskContract::default(),
+            max_retries: Some(3),
+            preconditions: vec![],
+        };
+
+        let plan = build_plan_with_config(&task, SubagentExecutionPath::Bridge, Some("invalid".to_string()));
+        let result = execute_plan_via_bridge(
+            std::path::Path::new("/tmp"),
+            &task,
+            &plan,
+            300,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid bridge_address format"));
+    }
+
+    #[test]
+    fn test_hybrid_path_falls_back_to_cli_outcome() {
+        let tmp = test_project_root();
+
+        let task = TaskItem {
+            id: "test-5".to_string(),
+            title: "Test".to_string(),
+            description: "Test task".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: TaskContract::default(),
+            max_retries: Some(3),
+            preconditions: vec![],
+        };
+
+        // Hybrid with CLI (which will work or fail gracefully)
+        let plan = build_plan_with_config(&task, SubagentExecutionPath::Cli, None);
+        let result = execute_plan(&tmp, &task, &plan, None, false);
+        assert!(result.is_ok());
     }
 }

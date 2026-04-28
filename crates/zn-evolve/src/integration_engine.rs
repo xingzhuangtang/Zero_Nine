@@ -103,20 +103,18 @@ pub struct EngineSnapshot {
 impl IntegrationEngine {
     /// 创建新的集成引擎
     pub fn new(project_root: &Path) -> Result<Self> {
-        let reward_model = RewardModel::new(
-            project_root.join(".zero_nine/evolve/pairwise_comparisons.ndjson")
-        )
-        .context("Failed to initialize reward model")?;
+        let reward_model =
+            RewardModel::new(project_root.join(".zero_nine/evolve/pairwise_comparisons.ndjson"))
+                .context("Failed to initialize reward model")?;
 
         let curriculum_manager = CurriculumManager::new(
-            project_root.join(".zero_nine/evolve/curriculum_history.ndjson")
+            project_root.join(".zero_nine/evolve/curriculum_history.ndjson"),
         )
         .context("Failed to initialize curriculum manager")?;
 
-        let belief_tracker = BeliefTracker::new(
-            project_root.join(".zero_nine/evolve/belief_states.ndjson")
-        )
-        .context("Failed to initialize belief tracker")?;
+        let belief_tracker =
+            BeliefTracker::new(project_root.join(".zero_nine/evolve/belief_states.ndjson"))
+                .context("Failed to initialize belief tracker")?;
 
         Ok(Self {
             reward_model,
@@ -165,8 +163,8 @@ impl IntegrationEngine {
         let reward_breakdown = self.reward_model.get_breakdown();
 
         // 融合决策
-        let should_continue = belief_decision.should_continue
-            && reward_breakdown.weighted_score > 0.5;
+        let should_continue =
+            belief_decision.should_continue && reward_breakdown.weighted_score > 0.5;
 
         let should_change_hypothesis = belief_decision.should_change_hypothesis
             || (reward_breakdown.weighted_score < 0.3 && belief_decision.confidence < 0.4);
@@ -187,7 +185,11 @@ impl IntegrationEngine {
                 "置信度 {:.2}, 证据平衡 {:.2}, 趋势 {}",
                 belief_decision.confidence,
                 belief_decision.evidence_balance,
-                if belief_decision.is_confidence_increasing { "上升" } else { "下降" }
+                if belief_decision.is_confidence_increasing {
+                    "上升"
+                } else {
+                    "下降"
+                }
             ),
             curriculum_reasoning: format!(
                 "最优难度 {:.2}, 当前掌握 {:.2}, 推荐任务 {:?}",
@@ -237,7 +239,9 @@ impl IntegrationEngine {
         }
 
         // 如果置信度高且奖励分数高，继续执行
-        if reward.weighted_score > 0.7 && matches!(belief_action, RecommendedAction::ProceedToExecution) {
+        if reward.weighted_score > 0.7
+            && matches!(belief_action, RecommendedAction::ProceedToExecution)
+        {
             return RecommendedAction::ProceedToExecution;
         }
 
@@ -256,28 +260,21 @@ impl IntegrationEngine {
 
         // 冲突 1: 高置信度但低奖励分数
         if belief.confidence > 0.7 && reward.weighted_score < 0.4 {
-            conflicts.push(
-                "高置信度与低奖励分数冲突：系统认为假设正确但执行质量低".to_string()
-            );
+            conflicts.push("高置信度与低奖励分数冲突：系统认为假设正确但执行质量低".to_string());
         }
 
         // 冲突 2: 低置信度但高奖励分数
         if belief.confidence < 0.3 && reward.weighted_score > 0.7 {
-            conflicts.push(
-                "低置信度与高奖励分数冲突：执行质量高但系统对假设不确定".to_string()
-            );
+            conflicts.push("低置信度与高奖励分数冲突：执行质量高但系统对假设不确定".to_string());
         }
 
         // 冲突 3: 课程推荐难度与当前能力差距过大
         let difficulty_gap = (curriculum.optimal_difficulty - curriculum.current_mastery).abs();
         if difficulty_gap > 0.3 {
-            conflicts.push(
-                format!("课程难度差距过大：推荐难度 {:.2} 与当前掌握 {:.2} 差距 {:.2}",
-                    curriculum.optimal_difficulty,
-                    curriculum.current_mastery,
-                    difficulty_gap
-                )
-            );
+            conflicts.push(format!(
+                "课程难度差距过大：推荐难度 {:.2} 与当前掌握 {:.2} 差距 {:.2}",
+                curriculum.optimal_difficulty, curriculum.current_mastery, difficulty_gap
+            ));
         }
 
         conflicts
@@ -304,9 +301,10 @@ impl IntegrationEngine {
 
     /// 重置引擎状态（用于新项目）
     pub fn reset(&mut self) {
-        self.reward_model = RewardModel::new(
-            std::path::PathBuf::from("/tmp/reward_reset.ndjson")
-        ).unwrap_or_else(|_| RewardModel::new(std::path::PathBuf::from("/tmp/reward.ndjson")).unwrap());
+        self.reward_model = RewardModel::new(std::path::PathBuf::from("/tmp/reward_reset.ndjson"))
+            .unwrap_or_else(|_| {
+                RewardModel::new(std::path::PathBuf::from("/tmp/reward.ndjson")).unwrap()
+            });
     }
 }
 
@@ -320,7 +318,11 @@ mod tests {
         ExecutionReport {
             task_id: task_id.to_string(),
             success,
-            outcome: if success { ExecutionOutcome::Completed } else { ExecutionOutcome::RetryableFailure },
+            outcome: if success {
+                ExecutionOutcome::Completed
+            } else {
+                ExecutionOutcome::RetryableFailure
+            },
             summary: "Test".to_string(),
             details: vec![],
             tests_passed: success,
@@ -337,13 +339,21 @@ mod tests {
             verification_verdict: None,
             verification_actions: vec![],
             verification_action_results: vec![],
-            failure_summary: if success { None } else { Some("Test failure".to_string()) },
+            failure_summary: if success {
+                None
+            } else {
+                Some("Test failure".to_string())
+            },
             exit_code: if success { 0 } else { 1 },
             execution_time_ms: 1000,
             token_count: 500,
             code_quality_score: if success { 0.8 } else { 0.5 },
             test_coverage: if success { 0.9 } else { 0.6 },
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         }
     }
 
@@ -358,10 +368,14 @@ mod tests {
 
         // Record some executions
         let report1 = create_mock_report("task-1", true);
-        engine.record_execution("task-1", true, "Test passed", &report1).unwrap();
+        engine
+            .record_execution("task-1", true, "Test passed", &report1)
+            .unwrap();
 
         let report2 = create_mock_report("task-2", false);
-        engine.record_execution("task-2", false, "Test failed", &report2).unwrap();
+        engine
+            .record_execution("task-2", false, "Test failed", &report2)
+            .unwrap();
 
         // Get integrated decision
         let decision = engine.get_integrated_decision();
@@ -384,7 +398,9 @@ mod tests {
 
         // Create conflicting state: high confidence but low quality
         let report = create_mock_report("task-1", true);
-        engine.record_execution("task-1", true, "Evidence", &report).unwrap();
+        engine
+            .record_execution("task-1", true, "Evidence", &report)
+            .unwrap();
 
         let decision = engine.get_integrated_decision();
 

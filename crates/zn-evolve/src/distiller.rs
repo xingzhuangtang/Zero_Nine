@@ -15,9 +15,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use zn_types::{
-    ExecutionReport, EvidenceStatus,
-    SkillBundle, SkillVersion, ActionRiskLevel,
-    ExecutionOutcome, WorkspaceStrategy, VerdictStatus,
+    ActionRiskLevel, EvidenceStatus, ExecutionOutcome, ExecutionReport, SkillBundle, SkillVersion,
+    VerdictStatus, WorkspaceStrategy,
 };
 
 /// Maximum patterns to keep per category
@@ -88,8 +87,12 @@ impl PatternExtractor {
             return Ok(());
         }
 
-        let file = fs::File::open(&self.patterns_file)
-            .with_context(|| format!("Failed to open patterns file: {}", self.patterns_file.display()))?;
+        let file = fs::File::open(&self.patterns_file).with_context(|| {
+            format!(
+                "Failed to open patterns file: {}",
+                self.patterns_file.display()
+            )
+        })?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
@@ -132,7 +135,11 @@ impl PatternExtractor {
                 category: PatternCategory::WorkspacePreparation,
                 description: format!("Workspace preparation using {} strategy", strategy_str),
                 frequency: 1,
-                success_rate: if workspace.status == zn_types::WorkspaceStatus::Finished { 1.0 } else { 0.5 },
+                success_rate: if workspace.status == zn_types::WorkspaceStatus::Finished {
+                    1.0
+                } else {
+                    0.5
+                },
                 avg_confidence: 0.75,
                 source_task_ids: vec![report.task_id.clone()],
                 evidence_keys: vec![format!("workspace:{}", workspace.branch_name)],
@@ -147,7 +154,11 @@ impl PatternExtractor {
         // Extract subagent coordination patterns
         if !report.agent_runs.is_empty() {
             let roles: Vec<String> = report.agent_runs.iter().map(|r| r.role.clone()).collect();
-            let success_count = report.agent_runs.iter().filter(|r| r.status == "completed").count();
+            let success_count = report
+                .agent_runs
+                .iter()
+                .filter(|r| r.status == "completed")
+                .count();
 
             let pattern = ExecutionPattern {
                 id: format!("subagent-{}", roles.join("-")),
@@ -157,7 +168,11 @@ impl PatternExtractor {
                 success_rate: success_count as f32 / report.agent_runs.len() as f32,
                 avg_confidence: 0.8,
                 source_task_ids: vec![report.task_id.clone()],
-                evidence_keys: report.agent_runs.iter().flat_map(|r| r.evidence_paths.clone()).collect(),
+                evidence_keys: report
+                    .agent_runs
+                    .iter()
+                    .flat_map(|r| r.evidence_paths.clone())
+                    .collect(),
                 preconditions: vec!["Task decomposition defined".to_string()],
                 outcomes: roles.clone(),
                 created_at: Utc::now(),
@@ -167,12 +182,15 @@ impl PatternExtractor {
         }
 
         // Extract evidence collection patterns
-        let collected_evidence: Vec<_> = report.evidence.iter()
+        let collected_evidence: Vec<_> = report
+            .evidence
+            .iter()
             .filter(|e| e.status == EvidenceStatus::Collected)
             .collect();
 
         if !collected_evidence.is_empty() {
-            let evidence_keys: Vec<String> = collected_evidence.iter().map(|e| e.key.clone()).collect();
+            let evidence_keys: Vec<String> =
+                collected_evidence.iter().map(|e| e.key.clone()).collect();
             let pattern = ExecutionPattern {
                 id: format!("evidence-{}", evidence_keys.len()),
                 category: PatternCategory::EvidenceCollection,
@@ -183,7 +201,10 @@ impl PatternExtractor {
                 source_task_ids: vec![report.task_id.clone()],
                 evidence_keys,
                 preconditions: vec!["Verification criteria defined".to_string()],
-                outcomes: collected_evidence.iter().map(|e| e.summary.clone()).collect(),
+                outcomes: collected_evidence
+                    .iter()
+                    .map(|e| e.summary.clone())
+                    .collect(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             };
@@ -192,34 +213,47 @@ impl PatternExtractor {
 
         // Extract verification workflow patterns
         if report.review_verdict.is_some() || report.verification_verdict.is_some() {
-            let review_status = report.review_verdict.as_ref().map(|v| {
-                match v.status {
+            let review_status = report
+                .review_verdict
+                .as_ref()
+                .map(|v| match v.status {
                     VerdictStatus::Passed => "passed",
                     VerdictStatus::Failed => "failed",
                     VerdictStatus::Warning => "warning",
                     VerdictStatus::Blocked => "blocked",
-                }
-            }).unwrap_or("none");
+                })
+                .unwrap_or("none");
 
-            let verify_status = report.verification_verdict.as_ref().map(|v| {
-                match v.status {
+            let verify_status = report
+                .verification_verdict
+                .as_ref()
+                .map(|v| match v.status {
                     VerdictStatus::Passed => "passed",
                     VerdictStatus::Failed => "failed",
                     VerdictStatus::Warning => "warning",
                     VerdictStatus::Blocked => "blocked",
-                }
-            }).unwrap_or("none");
+                })
+                .unwrap_or("none");
 
             let pattern = ExecutionPattern {
                 id: format!("verification-review-{}", report.success),
                 category: PatternCategory::VerificationWorkflow,
-                description: format!("Verification workflow: review={}, verification={}", review_status, verify_status),
+                description: format!(
+                    "Verification workflow: review={}, verification={}",
+                    review_status, verify_status
+                ),
                 frequency: 1,
                 success_rate: if report.success { 1.0 } else { 0.3 },
                 avg_confidence: 0.9,
                 source_task_ids: vec![report.task_id.clone()],
-                evidence_keys: vec!["review_verdict".to_string(), "verification_verdict".to_string()],
-                preconditions: vec!["Evidence collected".to_string(), "Review criteria defined".to_string()],
+                evidence_keys: vec![
+                    "review_verdict".to_string(),
+                    "verification_verdict".to_string(),
+                ],
+                preconditions: vec![
+                    "Evidence collected".to_string(),
+                    "Review criteria defined".to_string(),
+                ],
                 outcomes: vec![format!("Success: {}", report.success)],
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -232,14 +266,20 @@ impl PatternExtractor {
             let pattern = ExecutionPattern {
                 id: format!("recovery-{}", report.task_id),
                 category: PatternCategory::ErrorRecovery,
-                description: format!("Retryable failure recovery for: {}", report.failure_summary.as_deref().unwrap_or("unknown")),
+                description: format!(
+                    "Retryable failure recovery for: {}",
+                    report.failure_summary.as_deref().unwrap_or("unknown")
+                ),
                 frequency: 1,
                 success_rate: 0.5,
                 avg_confidence: 0.6,
                 source_task_ids: vec![report.task_id.clone()],
                 evidence_keys: vec!["failure_summary".to_string()],
                 preconditions: vec!["Retryable condition detected".to_string()],
-                outcomes: vec![report.failure_summary.clone().unwrap_or_else(|| "unknown".to_string())],
+                outcomes: vec![report
+                    .failure_summary
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())],
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             };
@@ -256,23 +296,31 @@ impl PatternExtractor {
 
     /// Merge a new pattern with existing ones or add it
     fn merge_pattern(&mut self, new_pattern: &ExecutionPattern) {
-        let patterns = self.patterns
+        let patterns = self
+            .patterns
             .entry(new_pattern.category.clone())
             .or_insert_with(Vec::new);
 
         // Try to find matching pattern
         let existing = patterns.iter_mut().find(|p| {
-            p.description == new_pattern.description ||
-            p.evidence_keys.iter().any(|k| new_pattern.evidence_keys.contains(k))
+            p.description == new_pattern.description
+                || p.evidence_keys
+                    .iter()
+                    .any(|k| new_pattern.evidence_keys.contains(k))
         });
 
         if let Some(existing_pattern) = existing {
             // Update existing pattern
             existing_pattern.frequency += 1;
-            existing_pattern.success_rate = (existing_pattern.success_rate * (existing_pattern.frequency - 1) as f32
-                + new_pattern.success_rate) / existing_pattern.frequency as f32;
-            existing_pattern.avg_confidence = (existing_pattern.avg_confidence + new_pattern.avg_confidence) / 2.0;
-            existing_pattern.source_task_ids.push(new_pattern.source_task_ids[0].clone());
+            existing_pattern.success_rate = (existing_pattern.success_rate
+                * (existing_pattern.frequency - 1) as f32
+                + new_pattern.success_rate)
+                / existing_pattern.frequency as f32;
+            existing_pattern.avg_confidence =
+                (existing_pattern.avg_confidence + new_pattern.avg_confidence) / 2.0;
+            existing_pattern
+                .source_task_ids
+                .push(new_pattern.source_task_ids[0].clone());
             existing_pattern.updated_at = Utc::now();
 
             // Merge evidence keys
@@ -287,11 +335,22 @@ impl PatternExtractor {
     }
 
     /// Get top patterns by category
-    pub fn get_top_patterns(&self, category: &PatternCategory, limit: usize) -> Vec<ExecutionPattern> {
-        let patterns: Vec<_> = self.patterns.get(category).map(|p| p.as_slice()).unwrap_or(&[]).to_vec();
+    pub fn get_top_patterns(
+        &self,
+        category: &PatternCategory,
+        limit: usize,
+    ) -> Vec<ExecutionPattern> {
+        let patterns: Vec<_> = self
+            .patterns
+            .get(category)
+            .map(|p| p.as_slice())
+            .unwrap_or(&[])
+            .to_vec();
         let mut sorted: Vec<_> = patterns;
         sorted.sort_by(|a, b| {
-            b.avg_confidence.partial_cmp(&a.avg_confidence).unwrap_or(std::cmp::Ordering::Equal)
+            b.avg_confidence
+                .partial_cmp(&a.avg_confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.frequency.cmp(&a.frequency))
         });
         sorted.truncate(limit);
@@ -420,7 +479,11 @@ impl SkillDistiller {
         Ok(SkillBundle {
             id: uuid_str[..8].to_string(),
             name: format!("pattern-{}", category_str),
-            version: SkillVersion { major: 1, minor: 0, patch: 0 },
+            version: SkillVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
             description: pattern.description.clone(),
             applicable_scenarios: vec![pattern.description.clone()],
             preconditions: pattern.preconditions.clone(),
@@ -475,7 +538,10 @@ impl SkillDistiller {
         }
 
         if pattern.success_rate > 0.8 {
-            recommendations.push(format!("High success rate ({:.0}%) - reliable pattern", pattern.success_rate * 100.0));
+            recommendations.push(format!(
+                "High success rate ({:.0}%) - reliable pattern",
+                pattern.success_rate * 100.0
+            ));
         }
 
         recommendations
@@ -486,7 +552,10 @@ impl SkillDistiller {
         let mut anti_patterns = Vec::new();
 
         if pattern.success_rate < 0.5 {
-            anti_patterns.push(format!("Low success rate ({:.0}%) indicates unreliable conditions", pattern.success_rate * 100.0));
+            anti_patterns.push(format!(
+                "Low success rate ({:.0}%) indicates unreliable conditions",
+                pattern.success_rate * 100.0
+            ));
         }
 
         if pattern.frequency < 3 {
@@ -511,20 +580,23 @@ impl SkillDistiller {
 
     /// Merge a distilled skill with existing ones
     fn merge_distilled_skill(&mut self, skill: &DistilledSkill) {
-        let existing = self.distilled_skills.iter_mut().find(|s| {
-            s.bundle.name == skill.bundle.name
-        });
+        let existing = self
+            .distilled_skills
+            .iter_mut()
+            .find(|s| s.bundle.name == skill.bundle.name);
 
         if let Some(existing_skill) = existing {
             // Update usage count and success rate
             let total_usage = existing_skill.bundle.usage_count + skill.bundle.usage_count;
             if total_usage > 0 {
-                existing_skill.bundle.success_rate =
-                    (existing_skill.bundle.success_rate * existing_skill.bundle.usage_count as f32
-                        + skill.bundle.success_rate * skill.bundle.usage_count as f32) / total_usage as f32;
+                existing_skill.bundle.success_rate = (existing_skill.bundle.success_rate
+                    * existing_skill.bundle.usage_count as f32
+                    + skill.bundle.success_rate * skill.bundle.usage_count as f32)
+                    / total_usage as f32;
             }
             existing_skill.bundle.usage_count = total_usage;
-            existing_skill.confidence_score = (existing_skill.confidence_score + skill.confidence_score) / 2.0;
+            existing_skill.confidence_score =
+                (existing_skill.confidence_score + skill.confidence_score) / 2.0;
         } else {
             self.distilled_skills.push(skill.clone());
         }
@@ -539,7 +611,9 @@ impl SkillDistiller {
     pub fn get_top_skills(&self, limit: usize) -> Vec<&DistilledSkill> {
         let mut skills: Vec<_> = self.distilled_skills.iter().collect();
         skills.sort_by(|a, b| {
-            b.confidence_score.partial_cmp(&a.confidence_score).unwrap_or(std::cmp::Ordering::Equal)
+            b.confidence_score
+                .partial_cmp(&a.confidence_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.bundle.usage_count.cmp(&a.bundle.usage_count))
         });
         skills.truncate(limit);
@@ -576,29 +650,50 @@ impl SkillDistiller {
 
     /// Match skills to a task based on preconditions and description
     pub fn match_skills_for_task(&self, task_description: &str) -> Vec<&DistilledSkill> {
-        let mut matched: Vec<_> = self.distilled_skills.iter()
+        let mut matched: Vec<_> = self
+            .distilled_skills
+            .iter()
             .filter(|skill| {
                 // Check if task description matches any skill scenario
                 let description_lower = task_description.to_lowercase();
-                skill.bundle.applicable_scenarios.iter().any(|scenario| {
-                    description_lower.contains(&scenario.to_lowercase())
-                }) || skill.bundle.description.to_lowercase().contains(&task_description.to_lowercase())
+                skill
+                    .bundle
+                    .applicable_scenarios
+                    .iter()
+                    .any(|scenario| description_lower.contains(&scenario.to_lowercase()))
+                    || skill
+                        .bundle
+                        .description
+                        .to_lowercase()
+                        .contains(&task_description.to_lowercase())
             })
             .collect();
 
         // Sort by confidence and success rate
         matched.sort_by(|a, b| {
-            b.confidence_score.partial_cmp(&a.confidence_score)
+            b.confidence_score
+                .partial_cmp(&a.confidence_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.bundle.success_rate.partial_cmp(&a.bundle.success_rate).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    b.bundle
+                        .success_rate
+                        .partial_cmp(&a.bundle.success_rate)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         matched
     }
 
     /// Apply a skill to modify an execution plan
-    pub fn apply_skill_to_plan(&self, skill_id: &str, plan: &mut zn_types::ExecutionPlan) -> Result<bool> {
-        let skill = self.distilled_skills.iter()
+    pub fn apply_skill_to_plan(
+        &self,
+        skill_id: &str,
+        plan: &mut zn_types::ExecutionPlan,
+    ) -> Result<bool> {
+        let skill = self
+            .distilled_skills
+            .iter()
             .find(|s| s.bundle.id == skill_id || s.bundle.name == skill_id)
             .ok_or_else(|| anyhow::anyhow!("Skill not found: {}", skill_id))?;
 
@@ -634,7 +729,10 @@ impl SkillDistiller {
         for skill in &mut self.distilled_skills {
             if skill.bundle.id == skill_id || skill.bundle.name == skill_id {
                 let total = skill.bundle.usage_count + 1;
-                let new_success_rate = (skill.bundle.success_rate * skill.bundle.usage_count as f32 + if success { 1.0 } else { 0.0 }) / total as f32;
+                let new_success_rate = (skill.bundle.success_rate
+                    * skill.bundle.usage_count as f32
+                    + if success { 1.0 } else { 0.0 })
+                    / total as f32;
 
                 skill.bundle.usage_count = total;
                 skill.bundle.success_rate = new_success_rate;
@@ -660,8 +758,8 @@ pub fn create_default_distiller(project_root: &Path) -> Result<SkillDistiller> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zn_types::{EvidenceRecord, EvidenceKind};
     use std::env::temp_dir;
+    use zn_types::{EvidenceKind, EvidenceRecord};
 
     #[test]
     fn test_pattern_extractor() {
@@ -680,17 +778,15 @@ mod tests {
             review_passed: true,
             artifacts: vec![],
             generated_artifacts: vec![],
-            evidence: vec![
-                EvidenceRecord {
-                    key: "test_evidence".to_string(),
-                    label: "Test".to_string(),
-                    kind: EvidenceKind::CommandOutput,
-                    status: EvidenceStatus::Collected,
-                    required: true,
-                    summary: "Collected".to_string(),
-                    path: None,
-                },
-            ],
+            evidence: vec![EvidenceRecord {
+                key: "test_evidence".to_string(),
+                label: "Test".to_string(),
+                kind: EvidenceKind::CommandOutput,
+                status: EvidenceStatus::Collected,
+                required: true,
+                summary: "Collected".to_string(),
+                path: None,
+            }],
             follow_ups: vec![],
             workspace_record: None,
             finish_branch_result: None,
@@ -707,6 +803,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         let patterns = extractor.extract_from_report(&report);
@@ -733,17 +833,15 @@ mod tests {
             review_passed: true,
             artifacts: vec![],
             generated_artifacts: vec![],
-            evidence: vec![
-                EvidenceRecord {
-                    key: "workspace_evidence".to_string(),
-                    label: "Workspace".to_string(),
-                    kind: EvidenceKind::Workspace,
-                    status: EvidenceStatus::Collected,
-                    required: true,
-                    summary: "Workspace prepared".to_string(),
-                    path: None,
-                },
-            ],
+            evidence: vec![EvidenceRecord {
+                key: "workspace_evidence".to_string(),
+                label: "Workspace".to_string(),
+                kind: EvidenceKind::Workspace,
+                status: EvidenceStatus::Collected,
+                required: true,
+                summary: "Workspace prepared".to_string(),
+                path: None,
+            }],
             follow_ups: vec![],
             workspace_record: Some(zn_types::WorkspaceRecord {
                 strategy: zn_types::WorkspaceStrategy::GitWorktree,
@@ -770,6 +868,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         // Run distillation twice to build frequency
@@ -820,6 +922,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         // WorkspacePreparation
@@ -835,7 +941,9 @@ mod tests {
             notes: vec![],
         });
         let patterns = extractor.extract_from_report(&report);
-        assert!(patterns.iter().any(|p| matches!(p.category, PatternCategory::WorkspacePreparation)));
+        assert!(patterns
+            .iter()
+            .any(|p| matches!(p.category, PatternCategory::WorkspacePreparation)));
 
         // SubagentCoordination
         report.workspace_record = None;
@@ -853,7 +961,9 @@ mod tests {
             replay_command: None,
         }];
         let patterns = extractor.extract_from_report(&report);
-        assert!(patterns.iter().any(|p| matches!(p.category, PatternCategory::SubagentCoordination)));
+        assert!(patterns
+            .iter()
+            .any(|p| matches!(p.category, PatternCategory::SubagentCoordination)));
 
         // EvidenceCollection
         report.agent_runs = vec![];
@@ -867,7 +977,9 @@ mod tests {
             path: None,
         }];
         let patterns = extractor.extract_from_report(&report);
-        assert!(patterns.iter().any(|p| matches!(p.category, PatternCategory::EvidenceCollection)));
+        assert!(patterns
+            .iter()
+            .any(|p| matches!(p.category, PatternCategory::EvidenceCollection)));
 
         // VerificationWorkflow
         use zn_types::{ReviewVerdict, VerdictStatus};
@@ -880,7 +992,9 @@ mod tests {
             evidence_keys: vec!["test_evidence".to_string()],
         });
         let patterns = extractor.extract_from_report(&report);
-        assert!(patterns.iter().any(|p| matches!(p.category, PatternCategory::VerificationWorkflow)));
+        assert!(patterns
+            .iter()
+            .any(|p| matches!(p.category, PatternCategory::VerificationWorkflow)));
 
         // ErrorRecovery
         report.review_verdict = None;
@@ -888,7 +1002,9 @@ mod tests {
         report.outcome = ExecutionOutcome::RetryableFailure;
         report.failure_summary = Some("Network error".to_string());
         let patterns = extractor.extract_from_report(&report);
-        assert!(patterns.iter().any(|p| matches!(p.category, PatternCategory::ErrorRecovery)));
+        assert!(patterns
+            .iter()
+            .any(|p| matches!(p.category, PatternCategory::ErrorRecovery)));
 
         let _ = fs::remove_file(&tmp_file);
     }
@@ -936,6 +1052,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         // Extract 3 times
@@ -1000,6 +1120,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         // Failure pattern should have lower confidence
@@ -1030,6 +1154,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         extractor.extract_from_report(&success_report);
@@ -1096,6 +1224,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         // Run distillation - patterns will be extracted and merged internally
@@ -1169,6 +1301,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         let _ = distiller.distill_from_report(&report).unwrap();
@@ -1191,6 +1327,8 @@ mod tests {
             workspace_record: None,
             verification_actions: vec![],
             finish_branch_automation: None,
+            execution_path: zn_types::SubagentExecutionPath::default(),
+            bridge_address: None,
         };
 
         // Find a skill to apply
@@ -1202,7 +1340,11 @@ mod tests {
             assert!(result.unwrap());
 
             // Plan should be modified
-            assert!(!plan.skill_chain.is_empty() || !plan.validation.is_empty() || !plan.deliverables.is_empty());
+            assert!(
+                !plan.skill_chain.is_empty()
+                    || !plan.validation.is_empty()
+                    || !plan.deliverables.is_empty()
+            );
         }
 
         let _ = fs::remove_file(&tmp_file);
@@ -1261,6 +1403,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
 
         let _ = distiller.distill_from_report(&report).unwrap();
@@ -1278,7 +1424,10 @@ mod tests {
 
             // Verify usage count increased
             let updated_skills = distiller.get_all_skills();
-            let updated_skill = updated_skills.iter().find(|s| s.bundle.id == skill_id).unwrap();
+            let updated_skill = updated_skills
+                .iter()
+                .find(|s| s.bundle.id == skill_id)
+                .unwrap();
             assert!(updated_skill.bundle.usage_count > initial_count);
         }
 
@@ -1327,6 +1476,10 @@ mod tests {
             code_quality_score: 0.0,
             test_coverage: 0.0,
             user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
         };
         extractor.extract_from_report(&report);
         extractor.save().unwrap();
