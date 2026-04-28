@@ -157,7 +157,13 @@ impl SkillFile {
         }
 
         // Check category
-        let valid_categories = ["brainstorming", "spec", "execution", "verification", "evolution"];
+        let valid_categories = [
+            "brainstorming",
+            "spec",
+            "execution",
+            "verification",
+            "evolution",
+        ];
         if !valid_categories.contains(&self.frontmatter.category.as_str()) {
             issues.push(SkillValidationIssue {
                 severity: SkillValidationSeverity::Warning,

@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryTarget {
-    Memory,  // MEMORY.md
-    User,    // USER.md
+    Memory, // MEMORY.md
+    User,   // USER.md
 }
 
 impl std::fmt::Display for MemoryTarget {
@@ -84,17 +84,11 @@ impl MemoryManager {
         fs::create_dir_all(&self.memory_dir)?;
 
         if !self.memory_file.exists() {
-            fs::write(
-                &self.memory_file,
-                Self::default_memory_content(),
-            )?;
+            fs::write(&self.memory_file, Self::default_memory_content())?;
         }
 
         if !self.user_file.exists() {
-            fs::write(
-                &self.user_file,
-                Self::default_user_content(),
-            )?;
+            fs::write(&self.user_file, Self::default_user_content())?;
         }
 
         Ok(())
@@ -159,14 +153,17 @@ updated: YYYY-MM-DD
     /// Read memory content
     pub fn read(&self, target: &MemoryTarget) -> Result<String> {
         let path = self.get_file(target);
-        fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", target))
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))
     }
 
     /// Execute a memory action
     pub fn execute(&mut self, action: &MemoryAction) -> Result<MemoryResult> {
         match action {
-            MemoryAction::Add { target, content, section } => {
+            MemoryAction::Add {
+                target,
+                content,
+                section,
+            } => {
                 self.add_content(target, content, section.as_deref())?;
                 Ok(MemoryResult {
                     success: true,
@@ -175,7 +172,11 @@ updated: YYYY-MM-DD
                     message: "Content added successfully".to_string(),
                 })
             }
-            MemoryAction::Replace { target, old_text, content } => {
+            MemoryAction::Replace {
+                target,
+                old_text,
+                content,
+            } => {
                 self.replace_content(target, old_text, content)?;
                 Ok(MemoryResult {
                     success: true,
@@ -197,10 +198,15 @@ updated: YYYY-MM-DD
     }
 
     /// Add content to memory
-    fn add_content(&self, target: &MemoryTarget, content: &str, section: Option<&str>) -> Result<()> {
+    fn add_content(
+        &self,
+        target: &MemoryTarget,
+        content: &str,
+        section: Option<&str>,
+    ) -> Result<()> {
         let path = self.get_file(target);
-        let mut current = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", target))?;
+        let mut current =
+            fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))?;
 
         // Update the frontmatter timestamp
         current = update_frontmatter_timestamp(&current);
@@ -251,8 +257,8 @@ updated: YYYY-MM-DD
     /// Replace content in memory
     fn replace_content(&self, target: &MemoryTarget, old_text: &str, new_text: &str) -> Result<()> {
         let path = self.get_file(target);
-        let mut current = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", target))?;
+        let mut current =
+            fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))?;
 
         if !current.contains(old_text) {
             anyhow::bail!("Old text not found in {}", target);
@@ -268,8 +274,8 @@ updated: YYYY-MM-DD
     /// Remove content from memory
     fn remove_content(&self, target: &MemoryTarget, old_text: &str) -> Result<()> {
         let path = self.get_file(target);
-        let mut current = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", target))?;
+        let mut current =
+            fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))?;
 
         if !current.contains(old_text) {
             anyhow::bail!("Text to remove not found in {}", target);
@@ -359,9 +365,7 @@ fn extract_sections(content: &str) -> Vec<String> {
 
 /// Create a default memory manager for a project
 pub fn create_default_manager(project_root: &Path) -> Result<MemoryManager> {
-    let memory_dir = project_root
-        .join(".zero_nine")
-        .join("memory");
+    let memory_dir = project_root.join(".zero_nine").join("memory");
     MemoryManager::new(memory_dir)
 }
 

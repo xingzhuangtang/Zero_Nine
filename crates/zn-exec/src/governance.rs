@@ -15,8 +15,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::info;
-use zn_types::Policy;
 use uuid::Uuid;
+use zn_types::Policy;
 
 // Re-export token counter types
 use crate::token_counter::TokenBudget;
@@ -119,16 +119,20 @@ impl ActionType {
             Self::ReadFile | Self::ReadDir | Self::ReadEnv | Self::GitStatus | Self::GitDiff => {
                 RiskLevel::Low
             }
-            Self::WriteFile | Self::RunCommand | Self::RunTest | Self::RunBuild
-            | Self::GitBranch | Self::GitCommit | Self::DispatchSubagent | Self::SpawnWorktree => {
-                RiskLevel::Medium
-            }
-            Self::DeleteFile | Self::ModifyConfig | Self::GitPush | Self::CreateIssue | Self::CreatePR => {
-                RiskLevel::High
-            }
-            Self::GitMerge | Self::GitDelete | Self::MergePR | Self::ClosePR => {
-                RiskLevel::Critical
-            }
+            Self::WriteFile
+            | Self::RunCommand
+            | Self::RunTest
+            | Self::RunBuild
+            | Self::GitBranch
+            | Self::GitCommit
+            | Self::DispatchSubagent
+            | Self::SpawnWorktree => RiskLevel::Medium,
+            Self::DeleteFile
+            | Self::ModifyConfig
+            | Self::GitPush
+            | Self::CreateIssue
+            | Self::CreatePR => RiskLevel::High,
+            Self::GitMerge | Self::GitDelete | Self::MergePR | Self::ClosePR => RiskLevel::Critical,
         }
     }
 }
@@ -397,8 +401,12 @@ impl PolicyEngine {
     /// Record token usage
     pub fn record_token_usage(&mut self, tokens: u64) {
         self.token_budget.add(tokens);
-        info!("Recorded token usage: {} tokens (total: {}, remaining: {})",
-            tokens, self.token_budget.used_tokens, self.token_budget.remaining());
+        info!(
+            "Recorded token usage: {} tokens (total: {}, remaining: {})",
+            tokens,
+            self.token_budget.used_tokens,
+            self.token_budget.remaining()
+        );
     }
 
     /// Get current token budget status
@@ -450,7 +458,8 @@ impl PolicyEngine {
             }
             // 安全修复：添加反序列化验证
             // 1. 检查行大小，拒绝过大的数据
-            if line.len() > 10240 { // 10KB 限制
+            if line.len() > 10240 {
+                // 10KB 限制
                 continue;
             }
             // 2. 验证基本结构
@@ -510,6 +519,25 @@ impl PolicyEngine {
     pub fn get_matrix(&self) -> &AuthorizationMatrix {
         &self.matrix
     }
+
+    /// Enforce safety policy: block dangerous actions when quality gates fail
+    pub fn enforce_merge_safety(
+        &self,
+        tests_passed: bool,
+        review_passed: bool,
+    ) -> Result<(), String> {
+        let merge_check = self.check_action(&ActionType::GitMerge);
+        if merge_check.blocked {
+            return Err("Merge action is blocked by policy".to_string());
+        }
+        if !tests_passed || !review_passed {
+            return Err(format!(
+                "Merge blocked by safety policy: tests={} review={}. Both must pass before merge/push.",
+                tests_passed, review_passed
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Result of an authorization check
@@ -543,13 +571,22 @@ pub fn render_approval_ticket(ticket: &ApprovalTicket) -> String {
     output.push_str(&format!("**Description**: {}\n\n", ticket.description));
 
     if !ticket.expected_outcome.is_empty() {
-        output.push_str(&format!("**Expected Outcome**: {}\n\n", ticket.expected_outcome));
+        output.push_str(&format!(
+            "**Expected Outcome**: {}\n\n",
+            ticket.expected_outcome
+        ));
     }
 
-    output.push_str(&format!("**Created**: {}\n", ticket.created_at.format("%Y-%m-%d %H:%M:%S UTC")));
+    output.push_str(&format!(
+        "**Created**: {}\n",
+        ticket.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+    ));
 
     if let Some(resolved) = ticket.resolved_at {
-        output.push_str(&format!("**Resolved**: {}\n", resolved.format("%Y-%m-%d %H:%M:%S UTC")));
+        output.push_str(&format!(
+            "**Resolved**: {}\n",
+            resolved.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
     }
 
     match &ticket.status {
@@ -577,9 +614,15 @@ mod tests {
     #[test]
     fn test_action_type_risk_levels() {
         assert_eq!(ActionType::ReadFile.default_risk_level(), RiskLevel::Low);
-        assert_eq!(ActionType::WriteFile.default_risk_level(), RiskLevel::Medium);
+        assert_eq!(
+            ActionType::WriteFile.default_risk_level(),
+            RiskLevel::Medium
+        );
         assert_eq!(ActionType::GitPush.default_risk_level(), RiskLevel::High);
-        assert_eq!(ActionType::GitMerge.default_risk_level(), RiskLevel::Critical);
+        assert_eq!(
+            ActionType::GitMerge.default_risk_level(),
+            RiskLevel::Critical
+        );
     }
 
     #[test]
@@ -589,7 +632,10 @@ mod tests {
 
         let read_entry = matrix.entries.get("ReadFile").unwrap();
         assert_eq!(read_entry.risk_level, RiskLevel::Low);
-        assert!(matches!(read_entry.authorization, AuthorizationRequirement::None));
+        assert!(matches!(
+            read_entry.authorization,
+            AuthorizationRequirement::None
+        ));
 
         let merge_entry = matrix.entries.get("GitMerge").unwrap();
         assert_eq!(merge_entry.risk_level, RiskLevel::Critical);
@@ -601,7 +647,8 @@ mod tests {
 
     #[test]
     fn test_approval_ticket_lifecycle() {
-        let mut ticket = ApprovalTicket::new("GitMerge", "Merge feature branch", RiskLevel::Critical);
+        let mut ticket =
+            ApprovalTicket::new("GitMerge", "Merge feature branch", RiskLevel::Critical);
         assert_eq!(ticket.status, ApprovalStatus::Pending);
 
         ticket.approve("test-user");
@@ -612,7 +659,10 @@ mod tests {
         let mut ticket2 = ApprovalTicket::new("GitDelete", "Delete branch", RiskLevel::Critical);
         ticket2.reject("Branch still needed");
         assert_eq!(ticket2.status, ApprovalStatus::Rejected);
-        assert_eq!(ticket2.rejection_reason, Some("Branch still needed".to_string()));
+        assert_eq!(
+            ticket2.rejection_reason,
+            Some("Branch still needed".to_string())
+        );
     }
 
     #[test]

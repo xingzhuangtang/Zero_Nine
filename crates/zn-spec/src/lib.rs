@@ -1,7 +1,7 @@
-pub mod skill_format;
-pub mod skill_manager;
 pub mod memory_tool;
 pub mod session_search;
+pub mod skill_format;
+pub mod skill_manager;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -10,9 +10,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use zn_types::{
-    default_spec_schema_version, BrainstormSession, LoopStage, LoopState, ProgressRecord,
-    ProjectManifest, Proposal, ProposalStatus, RequirementPacket, RuntimeEvent, SpecBundle,
-    SpecValidationIssue, SpecValidationReport, SpecValidationSeverity, TaskContract,
+    default_spec_schema_version, BrainstormSession, ExecutionStrategy, LoopStage, LoopState,
+    ProgressRecord, ProjectManifest, Proposal, ProposalStatus, RequirementPacket, RuntimeEvent,
+    SpecBundle, SpecValidationIssue, SpecValidationReport, SpecValidationSeverity, TaskContract,
     TaskDependencyEdge, TaskGraph, TaskItem, TaskStatus,
 };
 
@@ -36,6 +36,7 @@ pub fn ensure_layout(project_root: &Path) -> Result<()> {
         "evolve/candidates",
         "evolve/library",
         "runtime/cache",
+        "../.issues",
     ] {
         fs::create_dir_all(root.join(rel)).with_context(|| format!("create {}", rel))?;
     }
@@ -84,6 +85,8 @@ pub fn default_tasks(goal: &str) -> Vec<TaskItem> {
                         .to_string(),
                 ],
             },
+            max_retries: None,
+            preconditions: vec![],
         },
         TaskItem {
             id: "2".to_string(),
@@ -111,6 +114,10 @@ pub fn default_tasks(goal: &str) -> Vec<TaskItem> {
                     "Spec validation report contains no error severity issue.".to_string(),
                 ],
             },
+            max_retries: Some(1),
+            preconditions: vec![
+                "brainstorming_verdict_ready".to_string(),
+            ],
         },
         TaskItem {
             id: "3".to_string(),
@@ -135,6 +142,10 @@ pub fn default_tasks(goal: &str) -> Vec<TaskItem> {
                     "Workspace preparation summary is recorded into the task report.".to_string(),
                 ],
             },
+            max_retries: Some(2),
+            preconditions: vec![
+                "planning_artifacts_exist".to_string(),
+            ],
         },
         TaskItem {
             id: "4".to_string(),
@@ -159,6 +170,11 @@ pub fn default_tasks(goal: &str) -> Vec<TaskItem> {
                     "Required tests and review gates pass before completion.".to_string(),
                 ],
             },
+            max_retries: Some(3),
+            preconditions: vec![
+                "worktree_isolated".to_string(),
+                "plan_reviewed".to_string(),
+            ],
         },
     ]
 }
@@ -312,6 +328,9 @@ fn create_proposal_from_packet(
         updated_at: now,
         design_summary,
         source_brainstorm_session_id: session.map(|item| item.id.clone()),
+        source_issue_number: None,
+        source_repo: None,
+        source_type: None,
 
         // M1: Structured spec contract fields
         problem_statement: Some(packet.problem_statement.clone()),
@@ -322,6 +341,7 @@ fn create_proposal_from_packet(
         risks,
         dependencies: Vec::new(),
         non_goals: Vec::new(),
+        execution_strategy: Some(ExecutionStrategy::LinearSequential),
 
         tasks: default_tasks(goal),
     };
@@ -754,6 +774,10 @@ pub fn init_loop_state(proposal_id: &str) -> LoopState {
         retry_count: 0,
         stage: LoopStage::SpecDrafting,
         updated_at: Utc::now(),
+        max_iterations: None,
+        iteration_start: Utc::now(),
+        elapsed_seconds: 0,
+        transition_history: Vec::new(),
     }
 }
 
@@ -1035,6 +1059,20 @@ pub fn validate_proposal_spec(
         }
     }
 
+    // DAG ring detection as blocking validation gate
+    let graph = build_task_graph(proposal);
+    let dag_result = graph.validate_dag();
+    if !dag_result.valid {
+        for error in &dag_result.errors {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Error,
+                "dag.validation_failed",
+                "dag.json",
+                &format!("DAG error: {}", error.message),
+            ));
+        }
+    }
+
     Ok(SpecValidationReport {
         schema_version: default_spec_schema_version(),
         proposal_id: proposal.id.clone(),
@@ -1252,19 +1290,31 @@ fn split_multiline_answer(answer: &str) -> Vec<String> {
 pub fn create_default_policy_engine() -> zn_types::PolicyEngine {
     let mut engine = zn_types::PolicyEngine::default();
     engine.rules.push(zn_types::PolicyRule {
-        id: "rule-read".to_string(), name: "Read Operations".to_string(),
-        action_pattern: "file.read".to_string(), risk_level: zn_types::ActionRiskLevel::Low,
-        default_decision: zn_types::PolicyDecision::Allow, conditions: vec![], exceptions: vec![],
+        id: "rule-read".to_string(),
+        name: "Read Operations".to_string(),
+        action_pattern: "file.read".to_string(),
+        risk_level: zn_types::ActionRiskLevel::Low,
+        default_decision: zn_types::PolicyDecision::Allow,
+        conditions: vec![],
+        exceptions: vec![],
     });
     engine.rules.push(zn_types::PolicyRule {
-        id: "rule-write".to_string(), name: "Write Operations".to_string(),
-        action_pattern: "file.write".to_string(), risk_level: zn_types::ActionRiskLevel::Medium,
-        default_decision: zn_types::PolicyDecision::Allow, conditions: vec!["worktree_isolated".to_string()], exceptions: vec![],
+        id: "rule-write".to_string(),
+        name: "Write Operations".to_string(),
+        action_pattern: "file.write".to_string(),
+        risk_level: zn_types::ActionRiskLevel::Medium,
+        default_decision: zn_types::PolicyDecision::Allow,
+        conditions: vec!["worktree_isolated".to_string()],
+        exceptions: vec![],
     });
     engine.rules.push(zn_types::PolicyRule {
-        id: "rule-merge".to_string(), name: "Merge Operations".to_string(),
-        action_pattern: "git.merge".to_string(), risk_level: zn_types::ActionRiskLevel::Critical,
-        default_decision: zn_types::PolicyDecision::Ask, conditions: vec!["tests_passed".to_string(), "review_approved".to_string()], exceptions: vec![],
+        id: "rule-merge".to_string(),
+        name: "Merge Operations".to_string(),
+        action_pattern: "git.merge".to_string(),
+        risk_level: zn_types::ActionRiskLevel::Critical,
+        default_decision: zn_types::PolicyDecision::Ask,
+        conditions: vec!["tests_passed".to_string(), "review_approved".to_string()],
+        exceptions: vec![],
     });
     engine
 }
@@ -1274,46 +1324,115 @@ pub fn create_default_policy_engine() -> zn_types::PolicyEngine {
 pub fn create_default_skill_library() -> zn_types::SkillLibrary {
     let mut lib = zn_types::SkillLibrary::default();
     lib.bundles.push(zn_types::SkillBundle {
-        id: "skill-brainstorm".to_string(), name: "Brainstorming".to_string(),
-        version: zn_types::SkillVersion { major: 1, minor: 0, patch: 0 },
+        id: "skill-brainstorm".to_string(),
+        name: "Brainstorming".to_string(),
+        version: zn_types::SkillVersion {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        },
         description: "Socratic questioning for requirement clarification".to_string(),
         applicable_scenarios: vec!["requirement_gathering".to_string()],
-        preconditions: vec!["user_goal_provided".to_string()], disabled_conditions: vec![],
-        risk_level: zn_types::ActionRiskLevel::Low, skill_chain: vec!["brainstorming".to_string()],
-        artifacts: vec!["brainstorm-session.md".to_string()], usage_count: 0, success_rate: 0.0,
-        created_at: Utc::now(), updated_at: Utc::now(),
+        preconditions: vec!["user_goal_provided".to_string()],
+        disabled_conditions: vec![],
+        risk_level: zn_types::ActionRiskLevel::Low,
+        skill_chain: vec!["brainstorming".to_string()],
+        artifacts: vec!["brainstorm-session.md".to_string()],
+        usage_count: 0,
+        success_rate: 0.0,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
     });
     lib.bundles.push(zn_types::SkillBundle {
-        id: "skill-tdd".to_string(), name: "Test-Driven Development".to_string(),
-        version: zn_types::SkillVersion { major: 1, minor: 0, patch: 0 },
+        id: "skill-tdd".to_string(),
+        name: "Test-Driven Development".to_string(),
+        version: zn_types::SkillVersion {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        },
         description: "Test-first implementation cycle".to_string(),
         applicable_scenarios: vec!["feature_implementation".to_string()],
-        preconditions: vec!["requirements_clear".to_string()], disabled_conditions: vec![],
-        risk_level: zn_types::ActionRiskLevel::Medium, skill_chain: vec!["test-driven-development".to_string()],
-        artifacts: vec![], usage_count: 0, success_rate: 0.0,
-        created_at: Utc::now(), updated_at: Utc::now(),
+        preconditions: vec!["requirements_clear".to_string()],
+        disabled_conditions: vec![],
+        risk_level: zn_types::ActionRiskLevel::Medium,
+        skill_chain: vec!["test-driven-development".to_string()],
+        artifacts: vec![],
+        usage_count: 0,
+        success_rate: 0.0,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
     });
     lib.active_bundle_ids = lib.bundles.iter().map(|b| b.id.clone()).collect();
     lib
 }
 
-pub fn save_skill_library(project_root: &Path, library: &zn_types::SkillLibrary) -> Result<PathBuf> {
+pub fn save_skill_library(
+    project_root: &Path,
+    library: &zn_types::SkillLibrary,
+) -> Result<PathBuf> {
     let path = zero_nine_dir(project_root).join("evolve/skill-library.json");
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&path, serde_json::to_vec_pretty(library)?)?;
     Ok(path)
 }
 
 pub fn load_skill_library(project_root: &Path) -> Result<Option<zn_types::SkillLibrary>> {
     let path = zero_nine_dir(project_root).join("evolve/skill-library.json");
-    if !path.exists() { return Ok(None); }
+    if !path.exists() {
+        return Ok(None);
+    }
     let data = fs::read_to_string(path)?;
     Ok(Some(serde_json::from_str(&data)?))
+}
+
+// ==================== M6: Issue Mapping ====================
+
+use zn_types::IssueMapping;
+
+/// 记录 Issue → Proposal 映射关系
+pub fn record_issue_mapping(
+    issue_number: u64,
+    repo: &str,
+    proposal_id: &str,
+    project_root: &Path,
+) -> Result<()> {
+    let mappings_path = zero_nine_dir(project_root).join("runtime/issue-mappings.json");
+    let mut mappings: Vec<IssueMapping> = if mappings_path.exists() {
+        let data = fs::read_to_string(&mappings_path)?;
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    mappings.push(IssueMapping {
+        issue_number,
+        repo: repo.to_string(),
+        proposal_id: proposal_id.to_string(),
+        created_at: Utc::now(),
+    });
+
+    fs::write(&mappings_path, serde_json::to_string_pretty(&mappings)?)?;
+    Ok(())
+}
+
+/// 根据 proposal_id 查找对应的 Issue 信息
+pub fn find_issue_for_proposal(proposal_id: &str, project_root: &Path) -> Option<IssueMapping> {
+    let mappings_path = zero_nine_dir(project_root).join("runtime/issue-mappings.json");
+    if !mappings_path.exists() {
+        return None;
+    }
+    let data = fs::read_to_string(&mappings_path).ok()?;
+    let mappings: Vec<IssueMapping> = serde_json::from_str(&data).ok()?;
+    mappings.into_iter().find(|m| m.proposal_id == proposal_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
 
     #[test]
     fn test_policy_engine_creation() {
@@ -1335,13 +1454,35 @@ mod tests {
         let tmp_dir = temp_dir().join("zn_test");
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
-        
+
         let library = create_default_skill_library();
         save_skill_library(&tmp_dir, &library).unwrap();
-        
+
         let loaded = load_skill_library(&tmp_dir).unwrap().unwrap();
         assert_eq!(loaded.bundles.len(), library.bundles.len());
-        
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_issue_mapping_crud() {
+        let tmp_dir = temp_dir().join("zn_issue_mapping");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        ensure_layout(&tmp_dir).unwrap();
+
+        record_issue_mapping(42, "owner/repo", "proposal-1", &tmp_dir).unwrap();
+        record_issue_mapping(99, "owner/repo", "proposal-2", &tmp_dir).unwrap();
+
+        let found = find_issue_for_proposal("proposal-1", &tmp_dir);
+        assert!(found.is_some());
+        let mapping = found.unwrap();
+        assert_eq!(mapping.issue_number, 42);
+        assert_eq!(mapping.repo, "owner/repo");
+
+        let not_found = find_issue_for_proposal("nonexistent", &tmp_dir);
+        assert!(not_found.is_none());
+
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

@@ -22,7 +22,9 @@
       "Bash(cargo clippy:*)",
       "Bash(git commit:*)",
       "Bash(grep -v \"^--$\")",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(bc)",
+      "Bash(grep -c \"test$\")"
     ]
   },
   "hooks": {

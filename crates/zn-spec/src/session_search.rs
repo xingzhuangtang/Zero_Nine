@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: String,
-    pub session_type: String,  // brainstorm, execution, etc.
+    pub session_type: String, // brainstorm, execution, etc.
     pub goal: String,
     pub summary: String,
     pub artifacts: Vec<String>,
@@ -254,12 +254,12 @@ impl SessionSearch {
                 goal: row.get(2)?,
                 summary: row.get(3)?,
                 artifacts: serde_json::from_str(&artifacts_json)
-                    .map_err(|_e| rusqlite::Error::QueryReturnedNoRows)  // workaround
+                    .map_err(|_e| rusqlite::Error::QueryReturnedNoRows) // workaround
                     .unwrap_or_default(),
                 success: row.get::<_, i32>(5)? != 0,
                 created_at,
                 metadata: serde_json::from_str(&metadata_json)
-                    .map_err(|_e| rusqlite::Error::QueryReturnedNoRows)  // workaround
+                    .map_err(|_e| rusqlite::Error::QueryReturnedNoRows) // workaround
                     .unwrap_or_default(),
             })
         });
@@ -273,11 +273,9 @@ impl SessionSearch {
 
     /// Get session statistics
     pub fn get_stats(&self) -> Result<SessionStats> {
-        let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM sessions",
-            [],
-            |row| row.get(0),
-        )?;
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
 
         let successful: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM sessions WHERE success = 1",
@@ -452,7 +450,7 @@ mod tests {
                 goal: format!("Goal {}", i),
                 summary: format!("Summary {}", i),
                 artifacts: vec![],
-                success: i != 1,  // 2 success, 1 failure
+                success: i != 1, // 2 success, 1 failure
                 created_at: Utc::now(),
                 metadata: serde_json::json!({}),
             };

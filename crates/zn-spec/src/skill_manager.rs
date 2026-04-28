@@ -36,8 +36,9 @@ impl SkillManager {
         version: &str,
     ) -> Result<PathBuf> {
         let skill_dir = self.skills_dir.join(name);
-        fs::create_dir_all(&skill_dir)
-            .with_context(|| format!("Failed to create skill directory: {}", skill_dir.display()))?;
+        fs::create_dir_all(&skill_dir).with_context(|| {
+            format!("Failed to create skill directory: {}", skill_dir.display())
+        })?;
 
         let frontmatter = format!(
             r#"---
@@ -70,8 +71,12 @@ platforms: [claude-code, opencode]
         }
 
         let patched = content.replace(old_string, new_string);
-        fs::write(&skill_file, &patched)
-            .with_context(|| format!("Failed to write patched skill file: {}", skill_file.display()))?;
+        fs::write(&skill_file, &patched).with_context(|| {
+            format!(
+                "Failed to write patched skill file: {}",
+                skill_file.display()
+            )
+        })?;
 
         Ok(skill_file)
     }
@@ -90,8 +95,12 @@ platforms: [claude-code, opencode]
             .unwrap_or_else(|_| "name: invalid\n".to_string());
         let full_content = format!("---\n{}\n---\n{}\n", frontmatter_yaml, new_content);
 
-        fs::write(&skill_file, &full_content)
-            .with_context(|| format!("Failed to write edited skill file: {}", skill_file.display()))?;
+        fs::write(&skill_file, &full_content).with_context(|| {
+            format!(
+                "Failed to write edited skill file: {}",
+                skill_file.display()
+            )
+        })?;
 
         Ok(skill_file)
     }
@@ -102,8 +111,9 @@ platforms: [claude-code, opencode]
         if !skill_dir.exists() {
             anyhow::bail!("Skill '{}' not found", name);
         }
-        fs::remove_dir_all(&skill_dir)
-            .with_context(|| format!("Failed to delete skill directory: {}", skill_dir.display()))?;
+        fs::remove_dir_all(&skill_dir).with_context(|| {
+            format!("Failed to delete skill directory: {}", skill_dir.display())
+        })?;
         Ok(())
     }
 
@@ -115,9 +125,12 @@ platforms: [claude-code, opencode]
             return Ok(skills);
         }
 
-        for entry in fs::read_dir(&self.skills_dir)
-            .with_context(|| format!("Failed to read skills directory: {}", self.skills_dir.display()))?
-        {
+        for entry in fs::read_dir(&self.skills_dir).with_context(|| {
+            format!(
+                "Failed to read skills directory: {}",
+                self.skills_dir.display()
+            )
+        })? {
             let entry = entry?;
             let path = entry.path();
             if !path.is_dir() {
@@ -232,20 +245,24 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
 
         let manager = SkillManager::new(tmp_dir.clone());
-        manager.create(
-            "zero-nine-test-1",
-            SAMPLE_CONTENT,
-            "execution",
-            "Test skill 1",
-            "1.0.0",
-        ).unwrap();
-        manager.create(
-            "zero-nine-test-2",
-            SAMPLE_CONTENT,
-            "brainstorming",
-            "Test skill 2",
-            "1.0.0",
-        ).unwrap();
+        manager
+            .create(
+                "zero-nine-test-1",
+                SAMPLE_CONTENT,
+                "execution",
+                "Test skill 1",
+                "1.0.0",
+            )
+            .unwrap();
+        manager
+            .create(
+                "zero-nine-test-2",
+                SAMPLE_CONTENT,
+                "brainstorming",
+                "Test skill 2",
+                "1.0.0",
+            )
+            .unwrap();
 
         let skills = manager.list().unwrap();
         assert_eq!(skills.len(), 2);
@@ -259,13 +276,15 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
 
         let manager = SkillManager::new(tmp_dir.clone());
-        manager.create(
-            "zero-nine-view-test",
-            SAMPLE_CONTENT,
-            "execution",
-            "View test",
-            "1.0.0",
-        ).unwrap();
+        manager
+            .create(
+                "zero-nine-view-test",
+                SAMPLE_CONTENT,
+                "execution",
+                "View test",
+                "1.0.0",
+            )
+            .unwrap();
 
         let skill = manager.view("zero-nine-view-test").unwrap();
         assert_eq!(skill.frontmatter.name, "zero-nine-view-test");
@@ -280,13 +299,15 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
 
         let manager = SkillManager::new(tmp_dir.clone());
-        manager.create(
-            "zero-nine-patch-test",
-            SAMPLE_CONTENT,
-            "execution",
-            "Patch test",
-            "1.0.0",
-        ).unwrap();
+        manager
+            .create(
+                "zero-nine-patch-test",
+                SAMPLE_CONTENT,
+                "execution",
+                "Patch test",
+                "1.0.0",
+            )
+            .unwrap();
 
         let result = manager.patch(
             "zero-nine-patch-test",
@@ -307,13 +328,15 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
 
         let manager = SkillManager::new(tmp_dir.clone());
-        let skill_path = manager.create(
-            "zero-nine-delete-test",
-            SAMPLE_CONTENT,
-            "execution",
-            "Delete test",
-            "1.0.0",
-        ).unwrap();
+        let skill_path = manager
+            .create(
+                "zero-nine-delete-test",
+                SAMPLE_CONTENT,
+                "execution",
+                "Delete test",
+                "1.0.0",
+            )
+            .unwrap();
 
         assert!(skill_path.exists());
         let result = manager.delete("zero-nine-delete-test");

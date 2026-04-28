@@ -19,7 +19,7 @@ pub use curriculum::{CurriculumManager, CurriculumStats, OptimalTaskRecommendati
 
 // Re-export belief module
 pub mod belief;
-pub use belief::{BeliefTracker, BeliefDecision, RecommendedAction};
+pub use belief::{BeliefTracker, BeliefDecision, RecommendedAction, update_belief_from_report};
 
 // Integration engine - 三系统联动
 pub mod integration_engine;
@@ -147,4 +147,70 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
             created_at: Utc::now(),
         })
     }
+}
+
+/// Structured remediation guidance extracted from consumed evolution candidates
+#[derive(Debug, Clone)]
+pub struct RemediationGuidance {
+    pub fix_instructions: Vec<String>,
+    pub improve_patterns: Vec<String>,
+    pub confidence: f32,
+}
+
+/// Consume pending evolution candidates for a task and extract actionable guidance
+pub fn consume_candidates(project_root: &std::path::Path, task_id: &str) -> Option<RemediationGuidance> {
+    use std::fs;
+    let candidates_dir = project_root.join(".zero_nine/evolve/candidates");
+    if !candidates_dir.exists() {
+        return None;
+    }
+
+    let mut fix_instructions = Vec::new();
+    let mut improve_patterns = Vec::new();
+    let mut max_confidence = 0.0f32;
+    let mut consumed_any = false;
+
+    for entry in fs::read_dir(&candidates_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let filename = path.file_stem()?.to_string_lossy();
+        if !filename.starts_with(&format!("{}-", task_id)) {
+            continue;
+        }
+        // Already consumed
+        if filename.ends_with(".consumed") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path).ok()?;
+        let candidate: EvolutionCandidate = serde_json::from_str(&content).ok()?;
+        max_confidence = max_confidence.max(candidate.confidence);
+
+        match &candidate.kind {
+            EvolutionKind::AutoFix => {
+                fix_instructions.push(candidate.patch.clone());
+            }
+            EvolutionKind::AutoImprove | EvolutionKind::AutoLearn => {
+                improve_patterns.push(candidate.patch.clone());
+            }
+        }
+
+        // Mark as consumed by renaming
+        let new_name = format!("{}.consumed.json", filename);
+        let consumed_path = path.parent().unwrap().join(&new_name);
+        let _ = fs::rename(&path, &consumed_path);
+        consumed_any = true;
+    }
+
+    if !consumed_any {
+        return None;
+    }
+
+    Some(RemediationGuidance {
+        fix_instructions,
+        improve_patterns,
+        confidence: max_confidence,
+    })
 }

@@ -6,65 +6,16 @@
 //! - Support local .issues/ directory as fallback
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use chrono::Utc;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use uuid::Uuid;
 use zn_types::{
-    Proposal, ProposalStatus, TaskItem, TaskStatus,
-    Constraint, ConstraintCategory, AcceptanceCriterion,
-    Priority, VerificationMethod, CriterionStatus, Risk,
-    RiskProbability, RiskImpact,
+    AcceptanceCriterion, CommentResult, Constraint, ConstraintCategory, CriterionStatus,
+    GitHubIssue, ImportedIssue, IssueSource, LocalIssue, PrResult, Priority, Proposal,
+    ProposalStatus, Risk, RiskImpact, RiskProbability, TaskItem, TaskStatus, VerificationMethod,
 };
-
-/// GitHub Issue structure from gh CLI
-#[derive(Debug, Clone, Deserialize)]
-pub struct GitHubIssue {
-    pub number: u64,
-    pub title: String,
-    pub body: String,
-    pub state: String,
-    #[serde(default)]
-    pub labels: Vec<Label>,
-    #[serde(default)]
-    pub assignees: Vec<Assignee>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Label {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Assignee {
-    pub login: String,
-}
-
-/// Local issue structure for .issues/ directory
-#[derive(Debug, Clone, Deserialize)]
-pub struct LocalIssue {
-    pub title: String,
-    pub description: String,
-    #[serde(default)]
-    pub acceptance_criteria: Vec<String>,
-    #[serde(default)]
-    pub constraints: Vec<String>,
-    #[serde(default)]
-    pub labels: Vec<String>,
-}
-
-/// Result of importing an issue
-#[derive(Debug, Clone)]
-pub struct ImportedIssue {
-    pub source: String,
-    pub issue_id: String,
-    pub proposal: Proposal,
-    pub import_path: String,
-}
 
 /// Read GitHub Issues and convert to Proposals
 pub fn read_github_issues(
@@ -77,7 +28,7 @@ pub fn read_github_issues(
     // Try gh CLI first
     if let Ok(issues) = fetch_github_issues_gh_cli(repo, issue_numbers.as_ref()) {
         for issue in issues {
-            let imported_issue = convert_github_issue_to_proposal(project_root, &issue)?;
+            let imported_issue = convert_github_issue_to_proposal(project_root, &issue, repo)?;
             imported.push(imported_issue);
         }
     } else {
@@ -94,9 +45,12 @@ fn fetch_github_issues_gh_cli(
     issue_numbers: Option<&Vec<u64>>,
 ) -> Result<Vec<GitHubIssue>> {
     let mut cmd = Command::new("gh");
-    cmd.arg("issue").arg("list").arg("--json")
+    cmd.arg("issue")
+        .arg("list")
+        .arg("--json")
         .arg("number,title,body,state,labels,assignees,createdAt,updatedAt")
-        .arg("--limit").arg("100");
+        .arg("--limit")
+        .arg("100");
 
     if let Some(repo_str) = repo {
         cmd.arg("--repo").arg(repo_str);
@@ -107,8 +61,12 @@ fn fetch_github_issues_gh_cli(
         let mut issues = Vec::new();
         for num in numbers {
             let mut single_cmd = Command::new("gh");
-            single_cmd.arg("issue").arg("view").arg(num.to_string())
-                .arg("--json").arg("number,title,body,state,labels,assignees,createdAt,updatedAt");
+            single_cmd
+                .arg("issue")
+                .arg("view")
+                .arg(num.to_string())
+                .arg("--json")
+                .arg("number,title,body,state,labels,assignees,createdAt,updatedAt");
             if let Some(repo_str) = repo {
                 single_cmd.arg("--repo").arg(repo_str);
             }
@@ -124,7 +82,10 @@ fn fetch_github_issues_gh_cli(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        return Err(anyhow!("gh CLI failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow!(
+            "gh CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let issues: Vec<GitHubIssue> = serde_json::from_slice(&output.stdout)?;
@@ -138,7 +99,9 @@ fn fetch_local_issues(
 ) -> Result<Vec<ImportedIssue>> {
     let issues_dir = project_root.join(".issues");
     if !issues_dir.exists() {
-        return Err(anyhow!("No .issues/ directory found and gh CLI unavailable"));
+        return Err(anyhow!(
+            "No .issues/ directory found and gh CLI unavailable"
+        ));
     }
 
     let mut imported = Vec::new();
@@ -150,7 +113,9 @@ fn fetch_local_issues(
         let canonicalized_path = path.canonicalize().ok();
         let canonicalized_issues_dir = issues_dir.canonicalize().ok();
 
-        if let (Some(real_path), Some(real_issues_dir)) = (canonicalized_path, canonicalized_issues_dir) {
+        if let (Some(real_path), Some(real_issues_dir)) =
+            (canonicalized_path, canonicalized_issues_dir)
+        {
             if !real_path.starts_with(&real_issues_dir) {
                 // 跳过不在 issues_dir 内的文件（可能是符号链接攻击）
                 continue;
@@ -163,7 +128,8 @@ fn fetch_local_issues(
 
         // Check if specific issue numbers were requested
         if let Some(numbers) = issue_numbers {
-            let file_num = path.file_stem()
+            let file_num = path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .and_then(|s| s.parse::<u64>().ok());
             if let Some(num) = file_num {
@@ -201,7 +167,9 @@ fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
             current_section = Some("description");
         } else if trimmed.starts_with("## Labels") {
             current_section = Some("labels");
-        } else if trimmed.starts_with("## Acceptance Criteria") || trimmed.starts_with("## 验收标准") {
+        } else if trimmed.starts_with("## Acceptance Criteria")
+            || trimmed.starts_with("## 验收标准")
+        {
             current_section = Some("acceptance");
         } else if trimmed.starts_with("## Constraints") || trimmed.starts_with("## 约束") {
             current_section = Some("constraints");
@@ -216,7 +184,8 @@ fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
                 }
                 "acceptance" => {
                     if trimmed.starts_with("- ") {
-                        acceptance_criteria.push(trimmed.trim_start_matches("- ").trim().to_string());
+                        acceptance_criteria
+                            .push(trimmed.trim_start_matches("- ").trim().to_string());
                     }
                 }
                 "constraints" => {
@@ -247,6 +216,7 @@ fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
 fn convert_github_issue_to_proposal(
     project_root: &Path,
     issue: &GitHubIssue,
+    repo: Option<&str>,
 ) -> Result<ImportedIssue> {
     let issue_id = format!("gh-{}", issue.number);
     let uuid_str = format!("{}", Uuid::new_v4().simple());
@@ -264,6 +234,11 @@ fn convert_github_issue_to_proposal(
     proposal.created_at = issue.created_at;
     proposal.updated_at = issue.updated_at;
 
+    // M6: Track GitHub source
+    proposal.source_issue_number = Some(issue.number);
+    proposal.source_repo = repo.map(String::from);
+    proposal.source_type = Some(IssueSource::GitHub);
+
     // Parse body for structured fields
     parse_issue_body_into_proposal(&issue.body, &mut proposal);
 
@@ -276,16 +251,26 @@ fn convert_github_issue_to_proposal(
         depends_on: vec![],
         kind: Some("execution".to_string()),
         contract: zn_types::TaskContract {
-            acceptance_criteria: proposal.acceptance_criteria.iter()
-                .map(|ac| ac.description.clone()).collect(),
+            acceptance_criteria: proposal
+                .acceptance_criteria
+                .iter()
+                .map(|ac| ac.description.clone())
+                .collect(),
             deliverables: vec!["Working implementation".to_string()],
             verification_points: vec!["All acceptance criteria met".to_string()],
         },
+        max_retries: None,
+        preconditions: vec![],
     };
     proposal.tasks = vec![task];
 
     // Save proposal
     let proposal_path = save_proposal(project_root, &proposal)?;
+
+    // M6: Record issue-to-proposal mapping for writeback
+    if let Some(repo_str) = repo {
+        let _ = zn_spec::record_issue_mapping(issue.number, repo_str, &proposal.id, project_root);
+    }
 
     Ok(ImportedIssue {
         source: format!("github:{}", issue.number),
@@ -301,7 +286,8 @@ fn convert_local_issue_to_proposal(
     issue: &LocalIssue,
     source_path: &Path,
 ) -> Result<ImportedIssue> {
-    let issue_id = source_path.file_stem()
+    let issue_id = source_path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
@@ -315,6 +301,9 @@ fn convert_local_issue_to_proposal(
     proposal.status = ProposalStatus::Draft;
     proposal.created_at = Utc::now();
     proposal.updated_at = Utc::now();
+
+    // M6: Track local issue source
+    proposal.source_type = Some(IssueSource::Local);
 
     // Add acceptance criteria
     for (i, ac_text) in issue.acceptance_criteria.iter().enumerate() {
@@ -365,6 +354,8 @@ fn convert_local_issue_to_proposal(
             deliverables: vec!["Working implementation".to_string()],
             verification_points: vec!["All acceptance criteria met".to_string()],
         },
+        max_retries: None,
+        preconditions: vec![],
     };
     proposal.tasks = vec![task];
 
@@ -400,7 +391,10 @@ fn parse_issue_body_into_proposal(body: &str, proposal: &mut Proposal) {
             match section {
                 "acceptance" => {
                     if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                        let text = trimmed.trim_start_matches("- ").trim_start_matches("* ").trim();
+                        let text = trimmed
+                            .trim_start_matches("- ")
+                            .trim_start_matches("* ")
+                            .trim();
                         if !text.is_empty() {
                             proposal.acceptance_criteria.push(AcceptanceCriterion {
                                 id: format!("ac-{}", proposal.acceptance_criteria.len() + 1),
@@ -414,7 +408,10 @@ fn parse_issue_body_into_proposal(body: &str, proposal: &mut Proposal) {
                 }
                 "constraints" => {
                     if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                        let text = trimmed.trim_start_matches("- ").trim_start_matches("* ").trim();
+                        let text = trimmed
+                            .trim_start_matches("- ")
+                            .trim_start_matches("* ")
+                            .trim();
                         if !text.is_empty() {
                             proposal.constraints.push(Constraint {
                                 id: format!("constraint-{}", proposal.constraints.len() + 1),
@@ -428,7 +425,10 @@ fn parse_issue_body_into_proposal(body: &str, proposal: &mut Proposal) {
                 }
                 "risks" => {
                     if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                        let text = trimmed.trim_start_matches("- ").trim_start_matches("* ").trim();
+                        let text = trimmed
+                            .trim_start_matches("- ")
+                            .trim_start_matches("* ")
+                            .trim();
                         if !text.is_empty() {
                             proposal.risks.push(Risk {
                                 id: format!("risk-{}", proposal.risks.len() + 1),
@@ -466,10 +466,14 @@ pub fn create_pull_request(
     base: Option<&str>,
 ) -> Result<PrResult> {
     let mut cmd = Command::new("gh");
-    cmd.arg("pr").arg("create")
-        .arg("--title").arg(title)
-        .arg("--body").arg(body)
-        .arg("--head").arg(branch);
+    cmd.arg("pr")
+        .arg("create")
+        .arg("--title")
+        .arg(title)
+        .arg("--body")
+        .arg(body)
+        .arg("--head")
+        .arg(branch);
 
     if let Some(base_branch) = base {
         cmd.arg("--base").arg(base_branch);
@@ -481,7 +485,10 @@ pub fn create_pull_request(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        return Err(anyhow!("gh pr create failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow!(
+            "gh pr create failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -500,8 +507,11 @@ pub fn write_issue_comment(
     comment: &str,
 ) -> Result<CommentResult> {
     let mut cmd = Command::new("gh");
-    cmd.arg("issue").arg("comment").arg(issue_number.to_string())
-        .arg("--body").arg(comment);
+    cmd.arg("issue")
+        .arg("comment")
+        .arg(issue_number.to_string())
+        .arg("--body")
+        .arg(comment);
 
     if let Some(repo_str) = repo {
         cmd.arg("--repo").arg(repo_str);
@@ -509,28 +519,16 @@ pub fn write_issue_comment(
 
     let output = cmd.output()?;
     if !output.status.success() {
-        return Err(anyhow!("gh issue comment failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow!(
+            "gh issue comment failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     Ok(CommentResult {
         success: true,
         message: "Comment posted successfully".to_string(),
     })
-}
-
-/// PR creation result
-#[derive(Debug, Clone)]
-pub struct PrResult {
-    pub success: bool,
-    pub pr_url: String,
-    pub message: String,
-}
-
-/// Comment result
-#[derive(Debug, Clone)]
-pub struct CommentResult {
-    pub success: bool,
-    pub message: String,
 }
 
 /// Write execution summary back to GitHub
@@ -547,7 +545,8 @@ pub fn write_execution_summary(
 
     comment.push_str("### Tasks\n\n");
     for task in &proposal.tasks {
-        comment.push_str(&format!("- [{}] **{}**: {:?}\n",
+        comment.push_str(&format!(
+            "- [{}] **{}**: {:?}\n",
             match task.status {
                 TaskStatus::Completed => "x",
                 TaskStatus::Failed => "!",

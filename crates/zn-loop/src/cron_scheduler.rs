@@ -117,8 +117,8 @@ impl CronScheduler {
         let content = fs::read_to_string(&self.state_path)
             .with_context(|| format!("Failed to read cron state: {}", self.state_path.display()))?;
 
-        self.state = serde_json::from_str(&content)
-            .with_context(|| "Failed to parse cron state JSON")?;
+        self.state =
+            serde_json::from_str(&content).with_context(|| "Failed to parse cron state JSON")?;
 
         debug!("Loaded {} cron jobs", self.state.jobs.len());
         Ok(())
@@ -229,7 +229,13 @@ impl CronScheduler {
     }
 
     /// Record job execution
-    pub fn record_execution(&mut self, job_id: &str, success: bool, error: Option<String>, duration_ms: Option<u64>) -> Result<()> {
+    pub fn record_execution(
+        &mut self,
+        job_id: &str,
+        success: bool,
+        error: Option<String>,
+        duration_ms: Option<u64>,
+    ) -> Result<()> {
         if let Some(job) = self.state.jobs.get_mut(job_id) {
             job.last_run = Some(Local::now().to_rfc3339());
             job.run_count += 1;
@@ -276,7 +282,10 @@ impl CronScheduler {
     /// Clean up expired one-shot jobs
     pub fn cleanup_expired(&mut self) -> Result<usize> {
         let mut removed = 0;
-        let expired_ids: Vec<String> = self.state.jobs.iter()
+        let expired_ids: Vec<String> = self
+            .state
+            .jobs
+            .iter()
             .filter(|(_, job)| {
                 if !job.enabled {
                     return true;
@@ -306,10 +315,16 @@ impl CronScheduler {
         let total = self.state.jobs.len();
         let enabled = self.state.jobs.values().filter(|j| j.enabled).count();
         let disabled = total - enabled;
-        let recurring = self.state.jobs.values()
+        let recurring = self
+            .state
+            .jobs
+            .values()
             .filter(|j| matches!(j.job_type, JobType::Recurring { .. }))
             .count();
-        let one_shot = self.state.jobs.values()
+        let one_shot = self
+            .state
+            .jobs
+            .values()
             .filter(|j| matches!(j.job_type, JobType::OneShot { .. }))
             .count();
         let total_runs: u64 = self.state.jobs.values().map(|j| j.run_count).sum();

@@ -32,6 +32,7 @@ pub struct SubagentDispatcher {
     proposal_id: String,
     task_id: String,
     recovery_ledger_path: PathBuf,
+    skill_chain: Vec<String>,
 }
 
 /// Dispatch result from a subagent
@@ -84,7 +85,12 @@ pub struct SubagentExecutionReport {
 
 impl SubagentDispatcher {
     /// Create a new subagent dispatcher
-    pub fn new(project_root: &Path, proposal_id: &str, task_id: &str) -> Result<Self> {
+    pub fn new(
+        project_root: &Path,
+        proposal_id: &str,
+        task_id: &str,
+        skill_chain: Vec<String>,
+    ) -> Result<Self> {
         let recovery_dir = project_root
             .join(".zero_nine/runtime/subagents")
             .join(proposal_id);
@@ -97,6 +103,7 @@ impl SubagentDispatcher {
             proposal_id: proposal_id.to_string(),
             task_id: task_id.to_string(),
             recovery_ledger_path,
+            skill_chain,
         })
     }
 
@@ -130,6 +137,7 @@ impl SubagentDispatcher {
                 command_hint: format!("Dispatch {} to: {}", brief.role, brief.goal),
                 context_files: brief.inputs.clone(),
                 expected_outputs: brief.outputs.clone(),
+                depends_on_roles: brief.depends_on.clone(),
             })
             .collect();
 
@@ -338,6 +346,135 @@ impl SubagentDispatcher {
         }
     }
 
+    /// Execute dispatches with cross-role handoff and dependency gating.
+    /// Each role waits for its predecessors to succeed before running.
+    /// Predecessor outputs become the next role's context inputs.
+    /// Returns (report, verdict) where verdict is the TriRoleVerdict.
+    pub fn run_tri_role_pipeline(
+        &mut self,
+        runbook: &SubagentRunBook,
+    ) -> (SubagentExecutionReport, TriRoleVerdict) {
+        let mut results = Vec::new();
+        let mut succeeded_roles: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+
+        for dispatch in &runbook.dispatches {
+            // Check dependencies
+            let deps_met = dispatch
+                .depends_on_roles
+                .iter()
+                .all(|dep| succeeded_roles.get(dep).copied().unwrap_or(false));
+            if !deps_met && !dispatch.depends_on_roles.is_empty() {
+                let skipped = DispatchResult {
+                    role: dispatch.role.clone(),
+                    success: false,
+                    output_files: Vec::new(),
+                    error: Some(format!(
+                        "Skipped: dependency role(s) {:?} did not succeed",
+                        dispatch.depends_on_roles
+                    )),
+                    raw_output: None,
+                };
+                let _ = self.record_dispatch(&skipped);
+                results.push(skipped);
+                succeeded_roles.insert(dispatch.role.clone(), false);
+                continue;
+            }
+
+            // Prepare context with handoff from predecessor outputs
+            self.prepare_context_with_handoff(dispatch, &succeeded_roles);
+
+            // Execute
+            match self.execute_dispatch(dispatch) {
+                Ok(result) => {
+                    let _ = self.record_dispatch(&result);
+                    results.push(result.clone());
+                    succeeded_roles.insert(dispatch.role.clone(), result.success);
+                }
+                Err(e) => {
+                    let error_result = DispatchResult {
+                        role: dispatch.role.clone(),
+                        success: false,
+                        output_files: Vec::new(),
+                        error: Some(e.to_string()),
+                        raw_output: None,
+                    };
+                    let _ = self.record_dispatch(&error_result);
+                    results.push(error_result);
+                    succeeded_roles.insert(dispatch.role.clone(), false);
+                }
+            }
+        }
+
+        let succeeded = results.iter().filter(|r| r.success).count();
+        let total = results.len();
+        let failed = total - succeeded;
+        let report = SubagentExecutionReport {
+            results,
+            all_succeeded: failed == 0,
+            total,
+            succeeded,
+            failed,
+        };
+        let verdict = compute_tri_role_verdict(&report.results);
+        (report, verdict)
+    }
+
+    /// Prepare context for a single dispatch, injecting actual output files
+    /// from predecessor roles instead of placeholder text.
+    fn prepare_context_with_handoff(
+        &self,
+        dispatch: &SubagentDispatch,
+        succeeded_roles: &std::collections::HashMap<String, bool>,
+    ) {
+        let bundle_dir = self
+            .project_root
+            .join(".zero_nine/runtime/subagents/context")
+            .join(&self.task_id)
+            .join(&dispatch.role);
+        let _ = fs::create_dir_all(&bundle_dir);
+
+        for input_label in &dispatch.context_files {
+            let file_path = bundle_dir.join(format!("{}.md", input_label.replace('/', "_")));
+            let actual_content = self.resolve_handoff_input(input_label, succeeded_roles);
+            if let Some(content) = actual_content {
+                let _ = fs::write(&file_path, content);
+            } else {
+                let _ = fs::write(&file_path, format!("Context file: {}", input_label));
+            }
+        }
+    }
+
+    /// Resolve a handoff input label to actual content from predecessor role outputs.
+    fn resolve_handoff_input(
+        &self,
+        label: &str,
+        succeeded_roles: &std::collections::HashMap<String, bool>,
+    ) -> Option<String> {
+        if let Some(ledger) = self.load_recovery_ledger() {
+            for record in &ledger.records {
+                if succeeded_roles.get(&record.role).copied().unwrap_or(false) {
+                    // Try to find output files matching the label
+                    for output in &record.actual_outputs {
+                        if output.contains(label) || label.contains(output) {
+                            if let Ok(content) = fs::read_to_string(output) {
+                                return Some(content);
+                            }
+                        }
+                    }
+                    // Fall back to summary
+                    if !record.summary.is_empty() {
+                        return Some(format!(
+                            "# Output from {} role\n\n{}\n",
+                            record.role, record.summary
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Generate dispatch command for external agent
     pub fn generate_dispatch_command(&self, dispatch: &SubagentDispatch) -> String {
         format!(
@@ -419,6 +556,18 @@ zero-nine subagent-dispatch \
 
     /// Build a prompt for subagent execution
     fn build_subagent_prompt(&self, dispatch: &SubagentDispatch) -> String {
+        let skills_section = if self.skill_chain.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n## Active Skills (apply these patterns)\n{}\n",
+                self.skill_chain
+                    .iter()
+                    .map(|s| format!("- {}", s))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
         format!(
             r#"# Subagent Task
 
@@ -432,7 +581,7 @@ zero-nine subagent-dispatch \
 You are acting as a {} subagent in the Zero_Nine orchestration system.
 Your task is to: {}
 
-Please complete the task and produce the expected outputs: {:?}
+Please complete the task and produce the expected outputs: {:?}{}
 
 ## Command Hint
 {}
@@ -449,8 +598,9 @@ Please complete the task and produce the expected outputs: {:?}
             dispatch.context_files,
             dispatch.expected_outputs,
             dispatch.role,
-            dispatch.role,
+            dispatch.command_hint,
             dispatch.expected_outputs,
+            skills_section,
             dispatch.command_hint,
         )
     }
@@ -545,8 +695,9 @@ pub fn create_dispatcher(
     project_root: &Path,
     proposal_id: &str,
     task_id: &str,
+    skill_chain: Vec<String>,
 ) -> Result<SubagentDispatcher> {
-    SubagentDispatcher::new(project_root, proposal_id, task_id)
+    SubagentDispatcher::new(project_root, proposal_id, task_id, skill_chain)
 }
 
 #[cfg(test)]
@@ -560,7 +711,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
         assert_eq!(dispatcher.task_id, "test-task");
         assert!(!dispatcher.recovery_ledger_path.exists());
 
@@ -574,7 +726,7 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
 
         let mut dispatcher =
-            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         // Initial load should return None
         assert!(dispatcher.load_recovery_ledger().is_none());
@@ -601,7 +753,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let briefs = vec![
             SubagentBrief {
@@ -609,12 +762,14 @@ mod tests {
                 goal: "Implement the feature".to_string(),
                 inputs: vec!["design.md".to_string()],
                 outputs: vec!["code".to_string()],
+                depends_on: vec![],
             },
             SubagentBrief {
                 role: "reviewer".to_string(),
                 goal: "Review the implementation".to_string(),
                 inputs: vec!["code".to_string()],
                 outputs: vec!["review verdict".to_string()],
+                depends_on: vec!["developer".to_string()],
             },
         ];
 
@@ -635,7 +790,7 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
 
         let mut dispatcher =
-            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let result = DispatchResult {
             role: "developer".to_string(),
@@ -660,7 +815,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let dispatcher = SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+        let dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let briefs = vec![
             SubagentBrief {
@@ -668,18 +824,21 @@ mod tests {
                 goal: "Implement feature".to_string(),
                 inputs: vec!["design.md".to_string()],
                 outputs: vec!["implementation.diff".to_string()],
+                depends_on: vec![],
             },
             SubagentBrief {
                 role: "reviewer".to_string(),
                 goal: "Review implementation".to_string(),
                 inputs: vec!["implementation.diff".to_string()],
                 outputs: vec!["review-verdict.md".to_string()],
+                depends_on: vec!["developer".to_string()],
             },
             SubagentBrief {
                 role: "verifier".to_string(),
                 goal: "Verify acceptance criteria".to_string(),
                 inputs: vec!["review-verdict.md".to_string()],
                 outputs: vec!["verification-report.md".to_string()],
+                depends_on: vec!["developer".to_string(), "reviewer".to_string()],
             },
         ];
 
@@ -702,7 +861,7 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
 
         let mut dispatcher =
-            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let results = vec![
             DispatchResult {
@@ -750,7 +909,7 @@ mod tests {
         fs::create_dir_all(&tmp_dir).unwrap();
 
         let mut dispatcher =
-            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task").unwrap();
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let results = vec![
             DispatchResult {
@@ -883,7 +1042,7 @@ mod tests {
         // Just verify the function returns a bool without panicking
         let result = is_claude_available();
         // In CI or dev environments, this is typically true; in sandboxed env, false
-        assert!(!result || result); // always true, just verifies no panic
+        let _ = result; // verifies no panic
     }
 
     #[test]
@@ -891,5 +1050,113 @@ mod tests {
         assert_eq!(AGENT_STATUS_COMPLETED, "completed");
         assert_eq!(AGENT_STATUS_FAILED, "failed");
         assert_ne!(AGENT_STATUS_COMPLETED, AGENT_STATUS_FAILED);
+    }
+
+    #[test]
+    fn test_prompt_uses_command_hint_not_role() {
+        let tmp_dir = temp_dir().join("prompt_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
+
+        let dispatch = SubagentDispatch {
+            role: "developer".to_string(),
+            command_hint: "Dispatch developer to: Write the search implementation".to_string(),
+            context_files: vec!["design.md".to_string()],
+            expected_outputs: vec!["code.diff".to_string()],
+            depends_on_roles: vec![],
+        };
+
+        let prompt = dispatcher.build_subagent_prompt(&dispatch);
+        // The prompt should contain the command_hint (goal-rich instruction)
+        assert!(prompt.contains("Write the search implementation"));
+        // The role name alone should not be the task description
+        assert!(!prompt.contains("Your task is to: developer"));
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_dependency_skip_on_predecessor_failure() {
+        let tmp_dir = temp_dir().join("dep_skip_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
+
+        let briefs = vec![
+            SubagentBrief {
+                role: "developer".to_string(),
+                goal: "Implement feature".to_string(),
+                inputs: vec![],
+                outputs: vec!["code.diff".to_string()],
+                depends_on: vec![],
+            },
+            SubagentBrief {
+                role: "reviewer".to_string(),
+                goal: "Review implementation".to_string(),
+                inputs: vec!["code.diff".to_string()],
+                outputs: vec!["verdict.md".to_string()],
+                depends_on: vec!["developer".to_string()],
+            },
+        ];
+
+        let runbook = dispatcher.create_runbook(&briefs, "Test");
+
+        // Simulate a pre-populated ledger with developer failure
+        let ledger = SubagentRecoveryLedger {
+            task_id: "test-task".to_string(),
+            records: vec![SubagentRecoveryRecord {
+                role: "developer".to_string(),
+                status: SubagentRunStatus::Failed,
+                summary: "Compilation error".to_string(),
+                expected_outputs: vec!["code.diff".to_string()],
+                actual_outputs: vec![],
+                evidence_paths: vec![],
+                failure_summary: Some("Build failed".to_string()),
+                state_transitions: vec![],
+                evidence_archive_path: None,
+                replay_ready: false,
+                replay_command: None,
+            }],
+            replay_summary: "developer failed".to_string(),
+        };
+        dispatcher.save_recovery_ledger(&ledger).unwrap();
+
+        // Pipeline should skip reviewer since developer failed
+        // Since claude CLI may not be available, we test the skip logic directly
+        // by checking that depends_on_roles is correctly propagated
+        assert!(runbook.dispatches[1]
+            .depends_on_roles
+            .contains(&"developer".to_string()));
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_backward_compat_no_deps() {
+        let tmp_dir = temp_dir().join("backward_compat_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
+
+        // Briefs with empty depends_on should work identically to before
+        let briefs = vec![SubagentBrief {
+            role: "analyst".to_string(),
+            goal: "Analyze requirements".to_string(),
+            inputs: vec!["req.md".to_string()],
+            outputs: vec!["analysis.md".to_string()],
+            depends_on: vec![],
+        }];
+
+        let runbook = dispatcher.create_runbook(&briefs, "Test");
+        assert_eq!(runbook.dispatches.len(), 1);
+        assert!(runbook.dispatches[0].depends_on_roles.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

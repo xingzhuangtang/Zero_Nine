@@ -9,9 +9,10 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use zn_types::{ExecutionOutcome, ExecutionReport};
 
 use zn_types::{BeliefState, WeightedEvidence};
 
@@ -75,7 +76,12 @@ impl BeliefTracker {
     }
 
     /// Update the latest belief state with Bayesian update
-    pub fn update_belief(&mut self, success: bool, evidence: &str, new_confidence: Option<f32>) -> Option<&mut BeliefState> {
+    pub fn update_belief(
+        &mut self,
+        success: bool,
+        evidence: &str,
+        new_confidence: Option<f32>,
+    ) -> Option<&mut BeliefState> {
         if let Some(state) = self.states.last_mut() {
             // Record confidence before update
             state.confidence_history.push(state.confidence);
@@ -198,7 +204,9 @@ impl BeliefTracker {
     pub fn update_hypothesis(&mut self, new_hypothesis: &str) -> Result<()> {
         if let Some(state) = self.states.last_mut() {
             // Record old hypothesis in history
-            state.hypothesis_history.push(state.current_hypothesis.clone());
+            state
+                .hypothesis_history
+                .push(state.current_hypothesis.clone());
             if state.hypothesis_history.len() > 10 {
                 state.hypothesis_history.remove(0);
             }
@@ -226,18 +234,26 @@ impl BeliefTracker {
 
         // Calculate evidence balance
         let for_weight: f32 = state.evidence_for.iter().map(|e| e.adjusted_weight()).sum();
-        let against_weight: f32 = state.evidence_against.iter().map(|e| e.adjusted_weight()).sum();
+        let against_weight: f32 = state
+            .evidence_against
+            .iter()
+            .map(|e| e.adjusted_weight())
+            .sum();
         let evidence_balance = for_weight - against_weight;
 
         // Confidence trend
         let confidence_trend = self.get_confidence_trend();
-        let is_confidence_increasing = confidence_trend.len() >= 2 && confidence_trend[0] > confidence_trend[confidence_trend.len() - 1];
+        let is_confidence_increasing = confidence_trend.len() >= 2
+            && confidence_trend[0] > confidence_trend[confidence_trend.len() - 1];
 
         // Decision logic based on Harness Engineering principles
         let should_continue = confidence > 0.7 && evidence_balance > 0.3;
-        let should_change_hypothesis = confidence < 0.3 || evidence_against_count > evidence_for_count * 2;
-        let should_run_experiment = confidence > 0.4 && confidence < 0.8 && open_questions_count > 0;
-        let should_escalate = confidence < 0.2 || (evidence_against_count > 3 && evidence_for_count < 2);
+        let should_change_hypothesis =
+            confidence < 0.3 || evidence_against_count > evidence_for_count * 2;
+        let should_run_experiment =
+            confidence > 0.4 && confidence < 0.8 && open_questions_count > 0;
+        let should_escalate =
+            confidence < 0.2 || (evidence_against_count > 3 && evidence_for_count < 2);
 
         BeliefDecision {
             confidence,
@@ -247,12 +263,21 @@ impl BeliefTracker {
             should_change_hypothesis,
             should_run_experiment,
             should_escalate,
-            recommended_action: self.recommend_action(confidence, evidence_balance, open_questions_count),
+            recommended_action: self.recommend_action(
+                confidence,
+                evidence_balance,
+                open_questions_count,
+            ),
         }
     }
 
     /// Recommend action based on belief state
-    fn recommend_action(&self, confidence: f32, evidence_balance: f32, open_questions: usize) -> RecommendedAction {
+    fn recommend_action(
+        &self,
+        confidence: f32,
+        evidence_balance: f32,
+        open_questions: usize,
+    ) -> RecommendedAction {
         if confidence > 0.85 && evidence_balance > 0.5 {
             RecommendedAction::ProceedToExecution
         } else if confidence < 0.3 {
@@ -397,9 +422,54 @@ pub enum RecommendedAction {
 
 /// Create default belief tracker in .zero_nine/evolve directory
 pub fn create_default_belief_tracker(project_root: &Path) -> Result<BeliefTracker> {
-    let belief_file = project_root
-        .join(".zero_nine/evolve/belief_states.ndjson");
+    let belief_file = project_root.join(".zero_nine/evolve/belief_states.ndjson");
     BeliefTracker::new(belief_file)
+}
+
+/// Update belief state from an execution report.
+/// Derives evidence from test results, review verdict, and failure classification.
+pub fn update_belief_from_report(project_root: &Path, report: &ExecutionReport) -> Result<()> {
+    let mut tracker = create_default_belief_tracker(project_root)?;
+    if tracker.states.is_empty() {
+        tracker.create_belief(
+            &report.task_id,
+            &format!("Task {} achieves its contract", report.task_id),
+        );
+    }
+
+    let tests_passed = report.tests_passed;
+    let review_passed = report.review_passed;
+    let is_success =
+        matches!(report.outcome, ExecutionOutcome::Completed) && tests_passed && review_passed;
+
+    let evidence = if is_success {
+        format!(
+            "tests={}, review={}, quality_gates={}",
+            tests_passed,
+            review_passed,
+            report.verification_action_results.len()
+        )
+    } else {
+        report
+            .failure_classification
+            .as_ref()
+            .map(|c| {
+                format!(
+                    "failure={:?}/{:?}{}",
+                    c.category,
+                    c.severity,
+                    c.suggested_fix
+                        .as_ref()
+                        .map(|s| format!(" fix_hint={}", s))
+                        .unwrap_or_default()
+                )
+            })
+            .unwrap_or_else(|| "outcome=unknown".to_string())
+    };
+
+    tracker.update_belief(is_success, &evidence, None);
+    tracker.save()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -415,10 +485,7 @@ mod tests {
         let mut tracker = BeliefTracker::new(tmp_file.clone()).unwrap();
 
         // Create initial belief
-        tracker.create_belief(
-            "Build a search feature",
-            "Users need fuzzy search",
-        );
+        tracker.create_belief("Build a search feature", "Users need fuzzy search");
 
         // Update with positive evidence
         tracker.update_belief(true, "User test passed", None);
@@ -486,10 +553,15 @@ mod tests {
 
         tracker.create_belief("Goal", "Initial hypothesis");
 
-        tracker.update_hypothesis("Updated hypothesis based on evidence").unwrap();
+        tracker
+            .update_hypothesis("Updated hypothesis based on evidence")
+            .unwrap();
 
         let belief = tracker.get_current_belief().unwrap();
-        assert_eq!(belief.current_hypothesis, "Updated hypothesis based on evidence");
+        assert_eq!(
+            belief.current_hypothesis,
+            "Updated hypothesis based on evidence"
+        );
 
         let _ = fs::remove_file(&tmp_file);
     }
