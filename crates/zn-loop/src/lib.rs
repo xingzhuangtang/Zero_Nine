@@ -17,10 +17,11 @@ use zn_exec::{
 };
 use zn_host::{export_adapter_files, write_execution_summary};
 use zn_spec::{
-    append_event, create_proposal_from_brainstorm, ensure_layout, init_loop_state,
-    load_latest_brainstorm_session, load_latest_proposal, load_manifest, proposal_dir,
-    save_brainstorm_session, save_loop_state, save_manifest, save_proposal, spec_bundle,
-    status_summary, update_progress_markdown, validate_proposal_spec, write_spec_validation_report,
+    append_event, check_spec_completeness, create_proposal_from_brainstorm, ensure_layout,
+    init_loop_state, load_latest_brainstorm_session, load_latest_proposal, load_manifest,
+    proposal_dir, save_brainstorm_session, save_loop_state, save_manifest, save_proposal,
+    spec_bundle, status_summary, update_progress_markdown, validate_proposal_spec,
+    write_spec_validation_report,
 };
 use zn_types::{
     BrainstormSession, BrainstormVerdict, ExecutionEnvelope, ExecutionOutcome, ExecutionPlan,
@@ -361,7 +362,9 @@ pub fn status(project_root: &Path) -> Result<String> {
 pub fn validate_spec(project_root: &Path) -> Result<String> {
     let proposal = load_latest_proposal(project_root)?
         .ok_or_else(|| anyhow!("no proposal found to validate"))?;
-    let report = validate_proposal_spec(project_root, &proposal)?;
+    let mut report = validate_proposal_spec(project_root, &proposal)?;
+    let completeness_issues = check_spec_completeness(project_root, &proposal)?;
+    report.issues.extend(completeness_issues);
     let path = write_spec_validation_report(project_root, &proposal)?;
 
     let mut lines = Vec::new();
@@ -373,9 +376,14 @@ pub fn validate_spec(project_root: &Path) -> Result<String> {
     } else {
         lines.push("issues:".to_string());
         for issue in report.issues {
+            let fix = issue
+                .suggested_fix
+                .as_deref()
+                .map(|s| format!(" — fix: {s}"))
+                .unwrap_or_default();
             lines.push(format!(
-                "- [{:?}] {} @ {} — {}",
-                issue.severity, issue.code, issue.path, issue.message
+                "- [{:?}] {} @ {} — {}{}",
+                issue.severity, issue.code, issue.path, issue.message, fix
             ));
         }
     }

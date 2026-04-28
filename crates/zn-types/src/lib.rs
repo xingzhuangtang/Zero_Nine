@@ -1529,6 +1529,8 @@ pub struct SpecValidationIssue {
     pub code: String,
     pub path: String,
     pub message: String,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -940,6 +940,7 @@ pub fn validate_proposal_spec(
             "proposal.schema_version_missing",
             "proposal.json",
             "Proposal schema_version must be present.",
+            Some("Set schema_version to \"zero_nine.stage1.v1\" in proposal.json."),
         ));
     }
 
@@ -949,6 +950,7 @@ pub fn validate_proposal_spec(
             "proposal.goal_missing",
             "proposal.json",
             "Proposal goal must not be empty.",
+            Some("Provide a non-empty goal string describing the intended outcome."),
         ));
     }
 
@@ -958,6 +960,7 @@ pub fn validate_proposal_spec(
             "proposal.tasks_missing",
             "proposal.json",
             "Proposal must contain at least one task.",
+            Some("Add at least one task to the proposal tasks array."),
         ));
     }
 
@@ -975,6 +978,7 @@ pub fn validate_proposal_spec(
                 "spec.file_missing",
                 required,
                 "Required spec artifact is missing.",
+                Some("Run the spec generation step to create the missing artifact file."),
             ));
         }
     }
@@ -986,6 +990,9 @@ pub fn validate_proposal_spec(
             "spec.requirement_packet_missing",
             "requirement-packet.json",
             "Requirement packet must exist before execution.",
+            Some(
+                "Run brainstorming or create a requirement-packet.json in the proposal directory.",
+            ),
         ));
     } else {
         let packet: RequirementPacket = serde_json::from_str(&fs::read_to_string(&packet_path)?)?;
@@ -995,6 +1002,7 @@ pub fn validate_proposal_spec(
                 "packet.schema_version_missing",
                 "requirement-packet.json",
                 "Requirement packet schema_version must be present.",
+                Some("Set schema_version in requirement-packet.json to \"zero_nine.stage1.v1\"."),
             ));
         }
         if !packet.next_questions.is_empty() {
@@ -1003,6 +1011,7 @@ pub fn validate_proposal_spec(
                 "packet.unresolved_questions",
                 "requirement-packet.json",
                 "Requirement packet still contains unresolved clarification questions.",
+                Some("Answer all clarification questions and remove them from next_questions."),
             ));
         }
         if !packet.clarified {
@@ -1011,6 +1020,7 @@ pub fn validate_proposal_spec(
                 "packet.not_marked_clarified",
                 "requirement-packet.json",
                 "Requirement packet is not marked clarified even though execution is being considered.",
+                Some("Set clarified: true in requirement-packet.json after reviewing all questions."),
             ));
         }
     }
@@ -1022,6 +1032,7 @@ pub fn validate_proposal_spec(
                 "task.title_missing",
                 &format!("tasks.{}.title", task.id),
                 "Task title must not be empty.",
+                Some("Provide a descriptive title for the task in the tasks array."),
             ));
         }
         if task.contract.acceptance_criteria.is_empty() {
@@ -1030,6 +1041,7 @@ pub fn validate_proposal_spec(
                 "task.contract_acceptance_missing",
                 &format!("tasks.{}.contract.acceptance_criteria", task.id),
                 "Task contract should include acceptance criteria.",
+                Some("Add acceptance criteria strings to the task's contract.acceptance_criteria array."),
             ));
         }
         if task.contract.verification_points.is_empty() {
@@ -1038,6 +1050,7 @@ pub fn validate_proposal_spec(
                 "task.contract_verification_missing",
                 &format!("tasks.{}.contract.verification_points", task.id),
                 "Task contract should include verification points.",
+                Some("Add verification point strings to the task's contract.verification_points array."),
             ));
         }
         for dependency in &task.depends_on {
@@ -1054,6 +1067,7 @@ pub fn validate_proposal_spec(
                         "Task dependency {} does not exist in proposal tasks.",
                         dependency
                     ),
+                    Some("Correct the depends_on reference to match an existing task ID, or add the missing task."),
                 ));
             }
         }
@@ -1069,6 +1083,7 @@ pub fn validate_proposal_spec(
                 "dag.validation_failed",
                 "dag.json",
                 &format!("DAG error: {}", error.message),
+                Some("Remove the circular dependency or fix the invalid task references."),
             ));
         }
     }
@@ -1084,10 +1099,227 @@ pub fn validate_proposal_spec(
 }
 
 pub fn write_spec_validation_report(project_root: &Path, proposal: &Proposal) -> Result<PathBuf> {
-    let report = validate_proposal_spec(project_root, proposal)?;
+    let mut report = validate_proposal_spec(project_root, proposal)?;
+    let completeness_issues = check_spec_completeness(project_root, proposal)?;
+    report.issues.extend(completeness_issues);
     let path = proposal_dir(project_root, &proposal.id).join("spec-validation.json");
     fs::write(&path, serde_json::to_vec_pretty(&report)?)?;
     Ok(path)
+}
+
+pub fn check_spec_completeness(
+    project_root: &Path,
+    proposal: &Proposal,
+) -> Result<Vec<SpecValidationIssue>> {
+    let bundle = spec_bundle(project_root, &proposal.id);
+    let mut issues = Vec::new();
+
+    if let Ok(content) = fs::read_to_string(&bundle.requirements_path) {
+        check_requirements_coverage(&content, proposal, &bundle.requirements_path, &mut issues);
+    }
+    if let Ok(content) = fs::read_to_string(&bundle.acceptance_path) {
+        check_acceptance_coverage(&content, proposal, &bundle.acceptance_path, &mut issues);
+    }
+    if let Ok(content) = fs::read_to_string(&bundle.design_path) {
+        check_design_coverage(&content, proposal, &bundle.design_path, &mut issues);
+    }
+    if let Ok(content) = fs::read_to_string(&bundle.tasks_path) {
+        check_task_deliverable_coverage(&content, proposal, &bundle.tasks_path, &mut issues);
+    }
+    check_verification_file(&bundle, &mut issues);
+    check_dag_task_alignment(proposal, &mut issues);
+
+    Ok(issues)
+}
+
+fn content_has_coverage(content: &str, text: &str) -> bool {
+    if text.len() <= 30 {
+        return content.contains(text);
+    }
+    let words: Vec<_> = text.split_whitespace().filter(|w| w.len() > 3).collect();
+    if words.is_empty() {
+        return false;
+    }
+    let matched = words.iter().filter(|w| content.contains(*w)).count();
+    (matched as f64 / words.len() as f64) >= 0.4
+}
+
+fn check_requirements_coverage(
+    content: &str,
+    proposal: &Proposal,
+    req_path: &str,
+    issues: &mut Vec<SpecValidationIssue>,
+) {
+    for item in &proposal.scope_in {
+        if !content_has_coverage(content, item) {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.requirements_gap",
+                req_path,
+                &format!("Scope-in item not covered in requirements.md: {item}"),
+                Some(&format!(
+                    "Add coverage for scope_in item '{item}' to requirements.md."
+                )),
+            ));
+        }
+    }
+    for item in &proposal.scope_out {
+        if !content_has_coverage(content, item) {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.requirements_gap",
+                req_path,
+                &format!("Scope-out item not covered in requirements.md: {item}"),
+                Some(&format!(
+                    "Add coverage for scope_out item '{item}' to requirements.md."
+                )),
+            ));
+        }
+    }
+    for constraint in &proposal.constraints {
+        if !constraint.description.trim().is_empty()
+            && !content_has_coverage(content, &constraint.description)
+        {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.requirements_gap",
+                req_path,
+                &format!(
+                    "Constraint not covered in requirements.md: {}",
+                    constraint.description
+                ),
+                Some(&format!(
+                    "Add coverage for constraint '{}' to requirements.md.",
+                    constraint.description
+                )),
+            ));
+        }
+    }
+}
+
+fn check_acceptance_coverage(
+    content: &str,
+    proposal: &Proposal,
+    acc_path: &str,
+    issues: &mut Vec<SpecValidationIssue>,
+) {
+    for criterion in &proposal.acceptance_criteria {
+        if !criterion.description.trim().is_empty()
+            && !content_has_coverage(content, &criterion.description)
+        {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.acceptance_gap",
+                acc_path,
+                &format!(
+                    "Acceptance criterion not covered in acceptance.md: {}",
+                    criterion.description
+                ),
+                Some(&format!(
+                    "Add coverage for acceptance criterion '{}' to acceptance.md.",
+                    criterion.description
+                )),
+            ));
+        }
+    }
+}
+
+fn check_design_coverage(
+    content: &str,
+    proposal: &Proposal,
+    design_path: &str,
+    issues: &mut Vec<SpecValidationIssue>,
+) {
+    for task in &proposal.tasks {
+        if !task.title.trim().is_empty() && !content_has_coverage(content, &task.title) {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Info,
+                "completeness.design_gap",
+                design_path,
+                &format!(
+                    "Task not covered in design.md: {} ({})",
+                    task.id, task.title
+                ),
+                Some(&format!(
+                    "Add design coverage for task '{}: {}' to design.md.",
+                    task.id, task.title
+                )),
+            ));
+        }
+    }
+}
+
+fn check_task_deliverable_coverage(
+    content: &str,
+    proposal: &Proposal,
+    tasks_path: &str,
+    issues: &mut Vec<SpecValidationIssue>,
+) {
+    for criterion in &proposal.acceptance_criteria {
+        if !criterion.description.trim().is_empty()
+            && !content_has_coverage(content, &criterion.description)
+        {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.task_deliverable_gap",
+                tasks_path,
+                &format!(
+                    "Acceptance criterion not referenced in tasks.md: {}",
+                    criterion.description
+                ),
+                Some(&format!(
+                    "Ensure tasks.md deliverables reference the acceptance criterion '{}'.",
+                    criterion.description
+                )),
+            ));
+        }
+    }
+}
+
+fn check_verification_file(bundle: &SpecBundle, issues: &mut Vec<SpecValidationIssue>) {
+    let path = &bundle.verification_path;
+    if !Path::new(path).exists() {
+        issues.push(validation_issue(
+            SpecValidationSeverity::Warning,
+            "completeness.verification_missing",
+            path,
+            "Verification report file is missing.",
+            Some("Write verification results to verification.md after execution."),
+        ));
+    } else if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() < 10 {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.verification_missing",
+                path,
+                "Verification report file is nearly empty.",
+                Some("Write verification results to verification.md after execution."),
+            ));
+        }
+    }
+}
+
+fn check_dag_task_alignment(proposal: &Proposal, issues: &mut Vec<SpecValidationIssue>) {
+    let task_ids: std::collections::HashSet<&str> =
+        proposal.tasks.iter().map(|t| t.id.as_str()).collect();
+    let mut referenced_ids = std::collections::HashSet::new();
+    for task in &proposal.tasks {
+        referenced_ids.insert(task.id.as_str());
+        for dep in &task.depends_on {
+            referenced_ids.insert(dep.as_str());
+        }
+    }
+    for id in &referenced_ids {
+        if !task_ids.contains(id) {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Warning,
+                "completeness.dag_orphan_edge",
+                "dag.json",
+                &format!("DAG references task ID '{id}' which does not exist in proposal tasks."),
+                Some(&format!("Remove the orphan reference to task '{id}' from dag.json or add the missing task.")),
+            ));
+        }
+    }
 }
 
 fn build_task_graph(proposal: &Proposal) -> TaskGraph {
@@ -1114,12 +1346,14 @@ fn validation_issue(
     code: &str,
     path: &str,
     message: &str,
+    suggested_fix: Option<&str>,
 ) -> SpecValidationIssue {
     SpecValidationIssue {
         severity,
         code: code.to_string(),
         path: path.to_string(),
         message: message.to_string(),
+        suggested_fix: suggested_fix.map(|s| s.to_string()),
     }
 }
 
@@ -1482,6 +1716,402 @@ mod tests {
 
         let not_found = find_issue_for_proposal("nonexistent", &tmp_dir);
         assert!(not_found.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    fn setup_test_project(tmp_dir: &Path, goal: &str, tasks: Vec<zn_types::TaskItem>) -> Proposal {
+        std::fs::create_dir_all(tmp_dir).unwrap();
+        ensure_layout(tmp_dir).unwrap();
+
+        let mut proposal = Proposal {
+            id: "test-proposal".to_string(),
+            goal: goal.to_string(),
+            schema_version: "zero_nine.stage1.v1".to_string(),
+            tasks,
+            ..Proposal::default()
+        };
+        proposal.scope_in = vec!["User authentication system".to_string()];
+        proposal.scope_out = vec!["Payment processing".to_string()];
+        proposal.constraints = vec![zn_types::Constraint {
+            id: "c1".to_string(),
+            category: zn_types::ConstraintCategory::Technical,
+            description: "Must use PostgreSQL".to_string(),
+            rationale: None,
+            enforced: true,
+        }];
+        proposal.acceptance_criteria = vec![zn_types::AcceptanceCriterion {
+            id: "ac1".to_string(),
+            description: "Users can log in with email and password".to_string(),
+            verification_method: zn_types::VerificationMethod::AutomatedTest,
+            priority: zn_types::Priority::High,
+            status: zn_types::CriterionStatus::Pending,
+        }];
+
+        save_proposal(tmp_dir, &proposal).unwrap();
+
+        // Create requirement packet
+        let packet = zn_types::RequirementPacket {
+            schema_version: "zero_nine.stage1.v1".to_string(),
+            user_goal: goal.to_string(),
+            problem_statement: "Need auth system".to_string(),
+            scope_in: vec!["User authentication system".to_string()],
+            scope_out: vec!["Payment processing".to_string()],
+            constraints: vec!["Must use PostgreSQL".to_string()],
+            acceptance_criteria: vec!["Users can log in with email and password".to_string()],
+            risks: vec![],
+            next_questions: vec![],
+            source_brainstorm_session_id: None,
+            clarified: true,
+        };
+        let packet_path = proposal_dir(tmp_dir, "test-proposal").join("requirement-packet.json");
+        fs::write(&packet_path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();
+
+        // Write minimal spec files
+        let bundle = spec_bundle(tmp_dir, "test-proposal");
+        fs::write(
+            &bundle.proposal_path,
+            "# Proposal\n\n## Goal\n\nBuild auth system.\n",
+        )
+        .unwrap();
+        fs::write(&bundle.requirements_path, "# Requirements\n\n## Scope In\n\n- User authentication system\n\n## Scope Out\n\n- Payment processing\n\n## Constraints\n\n- Must use PostgreSQL\n").unwrap();
+        fs::write(
+            &bundle.acceptance_path,
+            "# Acceptance\n\n- Users can log in with email and password\n",
+        )
+        .unwrap();
+        fs::write(
+            &bundle.design_path,
+            "# Design\n\n## Overview\n\nUser authentication system design.\n",
+        )
+        .unwrap();
+        fs::write(
+            &bundle.tasks_path,
+            "# Tasks\n\n## Task 1\n\nSetup auth infrastructure. Users can log in with email and password.\n",
+        )
+        .unwrap();
+        fs::write(&bundle.dag_path, "[]").unwrap();
+        fs::write(
+            &bundle.verification_path,
+            "# Verification\n\nAll checks passed.\n",
+        )
+        .unwrap();
+
+        proposal
+    }
+
+    #[test]
+    fn test_suggested_fix_on_validation_issues() {
+        let tmp_dir = temp_dir().join("zn_fix_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        ensure_layout(&tmp_dir).unwrap();
+
+        // Create proposal with known validation errors: empty goal
+        let proposal = Proposal {
+            id: "broken".to_string(),
+            goal: "".to_string(),
+            schema_version: "zero_nine.stage1.v1".to_string(),
+            tasks: vec![zn_types::TaskItem {
+                id: "t1".to_string(),
+                title: "Test task".to_string(),
+                description: "desc".to_string(),
+                status: zn_types::TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract {
+                    acceptance_criteria: vec!["ok".to_string()],
+                    deliverables: vec![],
+                    verification_points: vec!["check".to_string()],
+                },
+                max_retries: None,
+                preconditions: vec![],
+            }],
+            ..Proposal::default()
+        };
+        save_proposal(&tmp_dir, &proposal).unwrap();
+
+        let packet = zn_types::RequirementPacket {
+            schema_version: "zero_nine.stage1.v1".to_string(),
+            user_goal: "".to_string(),
+            problem_statement: "".to_string(),
+            scope_in: vec![],
+            scope_out: vec![],
+            constraints: vec![],
+            acceptance_criteria: vec![],
+            risks: vec![],
+            next_questions: vec![],
+            source_brainstorm_session_id: None,
+            clarified: true,
+        };
+        let packet_path = proposal_dir(&tmp_dir, "broken").join("requirement-packet.json");
+        fs::write(&packet_path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();
+
+        let bundle = spec_bundle(&tmp_dir, "broken");
+        for path in [
+            &bundle.proposal_path,
+            &bundle.requirements_path,
+            &bundle.acceptance_path,
+            &bundle.design_path,
+            &bundle.tasks_path,
+            &bundle.dag_path,
+        ] {
+            fs::write(path, "# placeholder\n").unwrap();
+        }
+
+        let report = validate_proposal_spec(&tmp_dir, &proposal).unwrap();
+        let error_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| matches!(i.severity, SpecValidationSeverity::Error))
+            .collect();
+        assert!(!error_issues.is_empty());
+        for issue in &error_issues {
+            assert!(
+                issue.suggested_fix.is_some(),
+                "Issue {} has no suggested_fix",
+                issue.code
+            );
+            assert!(
+                !issue.suggested_fix.as_ref().unwrap().is_empty(),
+                "Issue {} has empty fix suggestion",
+                issue.code
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_check_completeness_requirements_gap() {
+        let tmp_dir = temp_dir().join("zn_gap_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let task = zn_types::TaskItem {
+            id: "t1".to_string(),
+            title: "Auth".to_string(),
+            description: "desc".to_string(),
+            status: zn_types::TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract {
+                acceptance_criteria: vec!["ok".to_string()],
+                deliverables: vec![],
+                verification_points: vec!["check".to_string()],
+            },
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let proposal = setup_test_project(&tmp_dir, "Build auth system", vec![task]);
+
+        // Remove scope_in mention from requirements.md to create a gap
+        let bundle = spec_bundle(&tmp_dir, "test-proposal");
+        fs::write(
+            &bundle.requirements_path,
+            "# Requirements\n\n## Scope Out\n\n- Payment processing\n",
+        )
+        .unwrap();
+
+        let issues = check_spec_completeness(&tmp_dir, &proposal).unwrap();
+        let req_gaps: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "completeness.requirements_gap")
+            .collect();
+        assert!(
+            !req_gaps.is_empty(),
+            "Expected requirements_gap issues but found none"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_check_completeness_full_coverage() {
+        let tmp_dir = temp_dir().join("zn_full_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let task = zn_types::TaskItem {
+            id: "t1".to_string(),
+            title: "Auth".to_string(),
+            description: "desc".to_string(),
+            status: zn_types::TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract {
+                acceptance_criteria: vec!["ok".to_string()],
+                deliverables: vec![],
+                verification_points: vec!["check".to_string()],
+            },
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let proposal = setup_test_project(&tmp_dir, "Build auth system", vec![task]);
+
+        let issues = check_spec_completeness(&tmp_dir, &proposal).unwrap();
+        let warnings: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i.severity, SpecValidationSeverity::Warning))
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "Expected no warnings with full coverage, got {:?}",
+            warnings
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_check_completeness_dag_orphan_edge() {
+        let tmp_dir = temp_dir().join("zn_orphan_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let tasks = vec![
+            zn_types::TaskItem {
+                id: "t1".to_string(),
+                title: "First".to_string(),
+                description: "desc".to_string(),
+                status: zn_types::TaskStatus::Pending,
+                depends_on: vec!["nonexistent_task".to_string()],
+                kind: None,
+                contract: zn_types::TaskContract {
+                    acceptance_criteria: vec!["ok".to_string()],
+                    deliverables: vec![],
+                    verification_points: vec!["check".to_string()],
+                },
+                max_retries: None,
+                preconditions: vec![],
+            },
+            zn_types::TaskItem {
+                id: "t2".to_string(),
+                title: "Second".to_string(),
+                description: "desc".to_string(),
+                status: zn_types::TaskStatus::Pending,
+                depends_on: vec!["t1".to_string()],
+                kind: None,
+                contract: zn_types::TaskContract {
+                    acceptance_criteria: vec!["ok".to_string()],
+                    deliverables: vec![],
+                    verification_points: vec!["check".to_string()],
+                },
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        let proposal = setup_test_project(&tmp_dir, "Build system", tasks);
+
+        let issues = check_spec_completeness(&tmp_dir, &proposal).unwrap();
+        let orphan_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "completeness.dag_orphan_edge")
+            .collect();
+        assert!(
+            !orphan_issues.is_empty(),
+            "Expected dag_orphan_edge issues but found none"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_check_completeness_verification_missing() {
+        let tmp_dir = temp_dir().join("zn_verify_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let task = zn_types::TaskItem {
+            id: "t1".to_string(),
+            title: "Auth".to_string(),
+            description: "desc".to_string(),
+            status: zn_types::TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract {
+                acceptance_criteria: vec!["ok".to_string()],
+                deliverables: vec![],
+                verification_points: vec!["check".to_string()],
+            },
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let proposal = setup_test_project(&tmp_dir, "Build auth system", vec![task]);
+
+        // Delete verification file
+        let bundle = spec_bundle(&tmp_dir, "test-proposal");
+        let _ = fs::remove_file(&bundle.verification_path);
+
+        let issues = check_spec_completeness(&tmp_dir, &proposal).unwrap();
+        let verify_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.code == "completeness.verification_missing")
+            .collect();
+        assert!(
+            !verify_issues.is_empty(),
+            "Expected verification_missing issues but found none"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_write_report_merges_both_passes() {
+        let tmp_dir = temp_dir().join("zn_merge_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let task = zn_types::TaskItem {
+            id: "t1".to_string(),
+            title: "Auth".to_string(),
+            description: "desc".to_string(),
+            status: zn_types::TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract {
+                acceptance_criteria: vec!["ok".to_string()],
+                deliverables: vec![],
+                verification_points: vec!["check".to_string()],
+            },
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let proposal = setup_test_project(&tmp_dir, "Build auth system", vec![task]);
+
+        // Create a completeness gap by removing scope_in from requirements
+        let bundle = spec_bundle(&tmp_dir, "test-proposal");
+        fs::write(
+            &bundle.requirements_path,
+            "# Requirements\n\nNo scope mentioned.\n",
+        )
+        .unwrap();
+
+        let path = write_spec_validation_report(&tmp_dir, &proposal).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let report: SpecValidationReport = serde_json::from_str(&content).unwrap();
+
+        let _validation_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| !i.code.starts_with("completeness."))
+            .collect();
+        let completeness_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.code.starts_with("completeness."))
+            .collect();
+
+        assert!(
+            !completeness_issues.is_empty(),
+            "Expected completeness issues in merged report"
+        );
+        assert!(
+            completeness_issues
+                .iter()
+                .all(|i| i.suggested_fix.is_some()),
+            "All completeness issues should have fix suggestions"
+        );
+        // Validation should pass (no errors) even with completeness warnings
+        assert!(
+            report.valid,
+            "Report should be valid (completeness is advisory)"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
