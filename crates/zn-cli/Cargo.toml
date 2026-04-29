@@ -23,5 +23,6 @@ zn-evolve = { path = "../zn-evolve" }
 zn-exec = { path = "../zn-exec" }
 zn-host = { path = "../zn-host" }
 zn-loop = { path = "../zn-loop" }
+zn-sdk = { path = "../zn-sdk" }
 zn-spec = { path = "../zn-spec" }
 zn-types = { path = "../zn-types" }

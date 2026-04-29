@@ -2976,6 +2976,7 @@ dependencies = [
  "zn-exec",
  "zn-host",
  "zn-loop",
+ "zn-sdk",
  "zn-spec",
  "zn-types",
 ]
@@ -3038,6 +3039,20 @@ dependencies = [
  "zn-evolve",
  "zn-exec",
  "zn-host",
+ "zn-spec",
+ "zn-types",
+]
+
+[[package]]
+name = "zn-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "zn-exec",
+ "zn-host",
+ "zn-loop",
  "zn-spec",
  "zn-types",
 ]

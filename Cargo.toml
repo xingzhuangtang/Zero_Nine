@@ -8,6 +8,7 @@ members = [
   "crates/zn-host",
   "crates/zn-cli",
   "crates/zn-bridge",
+  "crates/zn-sdk",
 ]
 resolver = "2"
 

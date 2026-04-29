@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use zn_evolve::scorer::create_default_scorer;
 use zn_host::detect_host;
+use zn_sdk::{from_project, ZeroNine};
 use zn_spec::memory_tool::{
     create_default_manager as create_memory_manager, MemoryAction, MemoryTarget,
 };
@@ -467,7 +468,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { project, host } => {
-            zn_loop::initialize_project(&project, detect_host(host.as_deref()))?;
+            let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
+            sdk.init()?;
             println!("Initialized Zero_Nine at {}", project.display());
         }
         Commands::Brainstorm {
@@ -476,14 +478,14 @@ fn main() -> Result<()> {
             goal,
             resume,
         } => {
-            let host = detect_host(host.as_deref());
-            let output = if !resume && !matches!(host, HostKind::Terminal) {
+            let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
+            let output = if !resume && !matches!(sdk.host(), HostKind::Terminal) {
                 let input = goal.as_deref().ok_or_else(|| {
                     anyhow!("goal or answer input is required for host-native brainstorming")
                 })?;
-                zn_loop::brainstorm_host_turn(&project, input, host)?
+                sdk.brainstorm_host_turn(input)?
             } else {
-                zn_loop::brainstorm(&project, goal.as_deref(), host, resume)?
+                sdk.brainstorm(goal.as_deref(), resume)?
             };
             println!("{}", output);
         }
@@ -497,16 +499,13 @@ fn main() -> Result<()> {
             if let Some(addr) = &bridge_address {
                 set_bridge_address(&project, addr)?;
             }
-            let output = zn_loop::run_goal(
-                &project,
-                &goal,
-                detect_host(host.as_deref()),
-                confirm_remote_finish,
-            )?;
+            let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
+            let output = sdk.run_goal(&goal, confirm_remote_finish)?;
             println!("{}", output);
         }
         Commands::Status { project } => {
-            println!("{}", zn_loop::status(&project)?);
+            let sdk = from_project(&project.display().to_string(), HostKind::Terminal);
+            println!("{}", sdk.status()?.message);
         }
         Commands::Resume {
             project,
@@ -517,17 +516,12 @@ fn main() -> Result<()> {
             if let Some(addr) = &bridge_address {
                 set_bridge_address(&project, addr)?;
             }
-            println!(
-                "{}",
-                zn_loop::resume(
-                    &project,
-                    detect_host(host.as_deref()),
-                    confirm_remote_finish
-                )?
-            );
+            let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
+            println!("{}", sdk.resume(confirm_remote_finish)?);
         }
         Commands::Export { project } => {
-            println!("{}", zn_loop::export(&project)?);
+            let sdk = from_project(&project.display().to_string(), HostKind::Terminal);
+            println!("{}", sdk.export()?);
         }
         Commands::Skill { command } => {
             let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

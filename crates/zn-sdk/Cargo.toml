@@ -1,0 +1,18 @@
+[package]
+name = "zn-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zero_Nine SDK: unified facade for the orchestration kernel"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zn-types = { path = "../zn-types" }
+zn-spec = { path = "../zn-spec" }
+zn-exec = { path = "../zn-exec" }
+zn-loop = { path = "../zn-loop" }
+zn-host = { path = "../zn-host" }
