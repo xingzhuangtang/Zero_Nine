@@ -17,17 +17,17 @@ use zn_exec::{
 };
 use zn_host::{export_adapter_files, write_execution_summary};
 use zn_spec::{
-    append_event, check_spec_completeness, create_proposal_from_brainstorm, ensure_layout,
-    init_loop_state, load_latest_brainstorm_session, load_latest_proposal, load_manifest,
-    proposal_dir, save_brainstorm_session, save_loop_state, save_manifest, save_proposal,
-    spec_bundle, status_summary, update_progress_markdown, validate_proposal_spec,
-    write_spec_validation_report,
+    append_event, check_spec_completeness, check_spec_completeness_gate,
+    create_proposal_from_brainstorm, ensure_layout, init_loop_state,
+    load_latest_brainstorm_session, load_latest_proposal, load_manifest, proposal_dir,
+    save_brainstorm_session, save_loop_state, save_manifest, save_proposal, spec_bundle,
+    status_summary, update_progress_markdown, validate_proposal_spec, write_spec_validation_report,
 };
 use zn_types::{
     BrainstormSession, BrainstormVerdict, ExecutionEnvelope, ExecutionOutcome, ExecutionPlan,
     ExecutionReport, FailureCategory, FailureClassification, FailureSeverity, HostKind, LoopStage,
-    ProjectManifest, Proposal, ProposalStatus, RuntimeEvent, SafetyEvent, StateTransition,
-    TaskStatus,
+    ProjectManifest, Proposal, ProposalStatus, RuntimeEvent, SafetyEvent, SpecValidationSeverity,
+    StateTransition, TaskStatus,
 };
 use zn_types::{CompensationAction, CompensationType, EvolutionCandidate, EvolutionKind};
 
@@ -363,8 +363,15 @@ pub fn validate_spec(project_root: &Path) -> Result<String> {
     let proposal = load_latest_proposal(project_root)?
         .ok_or_else(|| anyhow!("no proposal found to validate"))?;
     let mut report = validate_proposal_spec(project_root, &proposal)?;
+    let gate_issues = check_spec_completeness_gate(project_root, &proposal)?;
+    report.issues.extend(gate_issues);
     let completeness_issues = check_spec_completeness(project_root, &proposal)?;
     report.issues.extend(completeness_issues);
+    // Recompute valid with all issues
+    report.valid = !report
+        .issues
+        .iter()
+        .any(|i| matches!(i.severity, SpecValidationSeverity::Error));
     let path = write_spec_validation_report(project_root, &proposal)?;
 
     let mut lines = Vec::new();
@@ -459,13 +466,21 @@ fn ensure_spec_execution_ready(
             proposal.status
         ));
     }
-    let validation_report = validate_proposal_spec(project_root, proposal)?;
+    let mut validation_report = validate_proposal_spec(project_root, proposal)?;
+    let gate_issues = check_spec_completeness_gate(project_root, proposal)?;
+    let gate_count = gate_issues.len();
+    validation_report.issues.extend(gate_issues);
+    validation_report.valid = !validation_report
+        .issues
+        .iter()
+        .any(|i| matches!(i.severity, SpecValidationSeverity::Error));
     if !validation_report.valid {
         write_spec_validation_report(project_root, proposal)?;
         return Err(anyhow!(
-            "cannot execute proposal {} because the bound OpenSpec contract failed validation with {} issue(s)",
+            "cannot execute proposal {} because the bound OpenSpec contract failed validation with {} issue(s) (including {} completeness gate issue(s))",
             proposal.id,
-            validation_report.issues.len()
+            validation_report.issues.len(),
+            gate_count
         ));
     }
     Ok(())
@@ -479,7 +494,13 @@ fn has_bound_spec_contract(project_root: &Path, proposal_id: &str) -> Result<boo
         return Ok(false);
     }
 
-    let report = validate_proposal_spec(project_root, &proposal)?;
+    let mut report = validate_proposal_spec(project_root, &proposal)?;
+    let gate_issues = check_spec_completeness_gate(project_root, &proposal)?;
+    report.issues.extend(gate_issues);
+    report.valid = !report
+        .issues
+        .iter()
+        .any(|i| matches!(i.severity, SpecValidationSeverity::Error));
     Ok(report.valid)
 }
 

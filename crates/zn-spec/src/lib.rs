@@ -1100,8 +1100,15 @@ pub fn validate_proposal_spec(
 
 pub fn write_spec_validation_report(project_root: &Path, proposal: &Proposal) -> Result<PathBuf> {
     let mut report = validate_proposal_spec(project_root, proposal)?;
+    let gate_issues = check_spec_completeness_gate(project_root, proposal)?;
+    report.issues.extend(gate_issues);
     let completeness_issues = check_spec_completeness(project_root, proposal)?;
     report.issues.extend(completeness_issues);
+    // Recompute valid with all issues
+    report.valid = !report
+        .issues
+        .iter()
+        .any(|i| matches!(i.severity, SpecValidationSeverity::Error));
     let path = proposal_dir(project_root, &proposal.id).join("spec-validation.json");
     fs::write(&path, serde_json::to_vec_pretty(&report)?)?;
     Ok(path)
@@ -1130,6 +1137,81 @@ pub fn check_spec_completeness(
     check_dag_task_alignment(proposal, &mut issues);
 
     Ok(issues)
+}
+
+/// Blocking completeness gate — checks that produce Error-level issues
+/// and prevent execution when critical spec content is missing.
+pub fn check_spec_completeness_gate(
+    project_root: &Path,
+    proposal: &Proposal,
+) -> Result<Vec<SpecValidationIssue>> {
+    let bundle = spec_bundle(project_root, &proposal.id);
+    let mut issues = Vec::new();
+
+    // Acceptance criteria must be documented — blocking
+    if let Ok(content) = fs::read_to_string(&bundle.acceptance_path) {
+        check_acceptance_coverage_blocking(
+            &content,
+            proposal,
+            &bundle.acceptance_path,
+            &mut issues,
+        );
+    }
+
+    // DAG must reference only existing task IDs — blocking
+    check_dag_task_alignment_blocking(proposal, &mut issues);
+
+    Ok(issues)
+}
+
+fn check_acceptance_coverage_blocking(
+    content: &str,
+    proposal: &Proposal,
+    acc_path: &str,
+    issues: &mut Vec<SpecValidationIssue>,
+) {
+    for criterion in &proposal.acceptance_criteria {
+        if !criterion.description.trim().is_empty()
+            && !content_has_coverage(content, &criterion.description)
+        {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Error,
+                "completeness.acceptance_gap",
+                acc_path,
+                &format!(
+                    "Acceptance criterion not covered in acceptance.md: {}",
+                    criterion.description
+                ),
+                Some(&format!(
+                    "Add coverage for acceptance criterion '{}' to acceptance.md before execution.",
+                    criterion.description
+                )),
+            ));
+        }
+    }
+}
+
+fn check_dag_task_alignment_blocking(proposal: &Proposal, issues: &mut Vec<SpecValidationIssue>) {
+    let task_ids: std::collections::HashSet<&str> =
+        proposal.tasks.iter().map(|t| t.id.as_str()).collect();
+    let mut referenced_ids = std::collections::HashSet::new();
+    for task in &proposal.tasks {
+        referenced_ids.insert(task.id.as_str());
+        for dep in &task.depends_on {
+            referenced_ids.insert(dep.as_str());
+        }
+    }
+    for id in &referenced_ids {
+        if !task_ids.contains(id) {
+            issues.push(validation_issue(
+                SpecValidationSeverity::Error,
+                "completeness.dag_orphan_edge",
+                "dag.json",
+                &format!("DAG references task ID '{id}' which does not exist in proposal tasks."),
+                Some(&format!("Remove the orphan reference to task '{id}' from dag.json or add the missing task.")),
+            ));
+        }
+    }
 }
 
 fn content_has_coverage(content: &str, text: &str) -> bool {
