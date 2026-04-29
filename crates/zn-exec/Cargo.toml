@@ -19,3 +19,5 @@ tracing.workspace = true
 uuid.workspace = true
 zn-types = { path = "../zn-types" }
 zn-bridge = { path = "../zn-bridge" }
+zn-evolve = { path = "../zn-evolve" }
+reqwest.workspace = true

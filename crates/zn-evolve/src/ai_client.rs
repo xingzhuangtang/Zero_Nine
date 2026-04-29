@@ -417,13 +417,24 @@ impl AIClient {
 
     /// 发送消息（简化接口）
     pub async fn send_message(&self, prompt: &str, system: Option<&str>) -> Result<AIResponse> {
+        self.send_message_with_config(prompt, system, None, None).await
+    }
+
+    /// 发送消息，支持自定义 max_tokens 和 temperature.
+    pub async fn send_message_with_config(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+    ) -> Result<AIResponse> {
         let request = AIRequest {
             messages: vec![AIMessage {
                 role: MessageRole::User,
                 content: prompt.to_string(),
             }],
-            max_tokens: 4096,
-            temperature: 0.7,
+            max_tokens: max_tokens.unwrap_or(4096),
+            temperature: temperature.unwrap_or(0.7),
             system_prompt: system.map(|s| s.to_string()),
         };
 

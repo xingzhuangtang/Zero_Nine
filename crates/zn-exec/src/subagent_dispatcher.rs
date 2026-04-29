@@ -420,6 +420,101 @@ impl SubagentDispatcher {
         (report, verdict)
     }
 
+    /// Execute the tri-role pipeline using direct LLM API calls
+    /// instead of the claude CLI. Each dispatch sends the prompt
+    /// to the LLM API and parses the response into a DispatchResult.
+    pub fn run_tri_role_pipeline_via_llm(
+        &mut self,
+        runbook: &SubagentRunBook,
+    ) -> (SubagentExecutionReport, TriRoleVerdict) {
+        let mut results = Vec::new();
+        let mut succeeded_roles: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+
+        for dispatch in &runbook.dispatches {
+            // Check dependencies (same logic as CLI pipeline)
+            let deps_met = dispatch
+                .depends_on_roles
+                .iter()
+                .all(|dep| succeeded_roles.get(dep).copied().unwrap_or(false));
+            if !deps_met && !dispatch.depends_on_roles.is_empty() {
+                let skipped = DispatchResult {
+                    role: dispatch.role.clone(),
+                    success: false,
+                    output_files: Vec::new(),
+                    error: Some(format!(
+                        "Skipped: dependency role(s) {:?} did not succeed",
+                        dispatch.depends_on_roles
+                    )),
+                    raw_output: None,
+                };
+                let _ = self.record_dispatch(&skipped);
+                results.push(skipped);
+                succeeded_roles.insert(dispatch.role.clone(), false);
+                continue;
+            }
+
+            // Build prompt (reuse existing method)
+            let prompt = self.build_subagent_prompt(dispatch);
+
+            // Call LLM API (sync wrapper around async AIClient)
+            match crate::llm_fallback::execute_dispatch_via_llm(&dispatch.role, &prompt) {
+                Ok(ai_response) => {
+                    let parsed = crate::llm_fallback::parse_llm_response(&ai_response.content);
+
+                    // Write any extracted files to disk
+                    let written_paths = crate::llm_fallback::write_parsed_files(
+                        &self.project_root,
+                        &parsed.file_contents,
+                    )
+                    .unwrap_or_default();
+
+                    let all_output_files: Vec<String> = parsed
+                        .output_files
+                        .into_iter()
+                        .chain(written_paths)
+                        .collect();
+
+                    let result = DispatchResult {
+                        role: dispatch.role.clone(),
+                        success: parsed.success,
+                        output_files: all_output_files,
+                        error: None,
+                        raw_output: Some(ai_response.content.clone()),
+                    };
+                    let _ = self.record_dispatch(&result);
+                    results.push(result.clone());
+                    succeeded_roles.insert(dispatch.role.clone(), result.success);
+                }
+                Err(e) => {
+                    let error_result = DispatchResult {
+                        role: dispatch.role.clone(),
+                        success: false,
+                        output_files: Vec::new(),
+                        error: Some(format!("LLM API call failed: {}", e)),
+                        raw_output: None,
+                    };
+                    let _ = self.record_dispatch(&error_result);
+                    results.push(error_result);
+                    succeeded_roles.insert(dispatch.role.clone(), false);
+                }
+            }
+        }
+
+        let succeeded = results.iter().filter(|r| r.success).count();
+        let total = results.len();
+        let failed = total - succeeded;
+        let report = SubagentExecutionReport {
+            results,
+            all_succeeded: failed == 0,
+            total,
+            succeeded,
+            failed,
+        };
+        let verdict = compute_tri_role_verdict(&report.results);
+        (report, verdict)
+    }
+
     /// Prepare context for a single dispatch, injecting actual output files
     /// from predecessor roles instead of placeholder text.
     fn prepare_context_with_handoff(
@@ -1156,6 +1251,44 @@ mod tests {
         let runbook = dispatcher.create_runbook(&briefs, "Test");
         assert_eq!(runbook.dispatches.len(), 1);
         assert!(runbook.dispatches[0].depends_on_roles.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_run_tri_role_pipeline_via_llm_structure() {
+        // This test validates the structure of run_tri_role_pipeline_via_llm.
+        // It does NOT test actual API calls (those require network + API key).
+        // Instead, it verifies the method exists and returns correct types
+        // when the LLM call fails gracefully.
+        let tmp_dir = temp_dir().join("pipeline_llm_test");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut dispatcher =
+            SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
+
+        let briefs = vec![SubagentBrief {
+            role: "analyst".to_string(),
+            goal: "Analyze requirements".to_string(),
+            inputs: vec!["req.md".to_string()],
+            outputs: vec!["analysis.md".to_string()],
+            depends_on: vec![],
+        }];
+
+        let runbook = dispatcher.create_runbook(&briefs, "Test");
+
+        // This will fail (no API key) but should return a valid error report, not panic
+        let (report, verdict) = dispatcher.run_tri_role_pipeline_via_llm(&runbook);
+        assert_eq!(report.total, 1);
+        // Should fail gracefully since no API key is configured
+        assert!(!report.all_succeeded);
+        assert!(report.results[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("LLM API call failed"));
+        assert_eq!(verdict, TriRoleVerdict::DevelopmentFailed);
 
         let _ = fs::remove_dir_all(&tmp_dir);
     }

@@ -41,6 +41,10 @@ pub use zn_types::TraceContext;
 // Subagent dispatcher module
 pub mod subagent_dispatcher;
 
+// LLM fallback module — direct API calls when CLI unavailable
+pub mod llm_fallback;
+pub use llm_fallback::{call_llm_sync, execute_dispatch_via_llm, ParsedLlmResponse, parse_llm_response, write_parsed_files};
+
 // Governance module
 pub mod governance;
 
@@ -364,17 +368,6 @@ pub fn execute_subagent_dispatch(
         };
     }
 
-    if !is_claude_available() {
-        info!("claude CLI not available; skipping real subagent execution");
-        return SubagentExecutionOutcome {
-            agent_runs: Vec::new(),
-            evidence: Vec::new(),
-            artifact_paths: Vec::new(),
-            all_succeeded: false,
-            tri_role_verdict: None,
-        };
-    }
-
     // Use task_id from plan as proposal_id for path consistency
     let proposal_id = plan.task_id.as_str();
     let task_id = plan.task_id.as_str();
@@ -408,8 +401,12 @@ pub fn execute_subagent_dispatch(
     // Persist runbook artifacts to disk
     let _ = dispatcher.save_runbook(&runbook);
 
-    // Execute with cross-role handoff pipeline
-    let (report, verdict) = dispatcher.run_tri_role_pipeline(&runbook);
+    // Execute: try CLI first, fall back to LLM API
+    let (report, verdict) = if is_claude_available() {
+        dispatcher.run_tri_role_pipeline(&runbook)
+    } else {
+        dispatcher.run_tri_role_pipeline_via_llm(&runbook)
+    };
 
     // Convert report to outcome
     let agent_runs: Vec<AgentRunRecord> = report
@@ -902,9 +899,17 @@ fn execute_file_operations(
     Ok(results)
 }
 
-/// Generate content for a deliverable based on plan context
+/// Generate content for a deliverable based on plan context.
+/// Tries LLM generation first, falls back to template on failure.
 fn generate_deliverable_content(plan: &ExecutionPlan, deliverable: &str) -> String {
-    // Default content template for deliverables
+    match generate_content_via_llm(plan, deliverable) {
+        Ok(content) if !content.trim().is_empty() => return content,
+        Ok(_) | Err(_) => {
+            info!("LLM content generation failed for {deliverable}; falling back to template");
+        }
+    }
+
+    // Template fallback (unchanged)
     format!(
         r#"# Deliverable: {}
 
@@ -930,6 +935,40 @@ This file was automatically generated as part of the execution plan.
         plan.deliverables.join("\n"),
         plan.risks.join("\n"),
     )
+}
+
+/// Attempt to generate deliverable content via the LLM API.
+fn generate_content_via_llm(plan: &ExecutionPlan, deliverable: &str) -> Result<String> {
+    let system = "You are a technical writer for the Zero_Nine orchestration system. \
+        Generate detailed, specific markdown content for the deliverable described below. \
+        Include concrete steps, analysis, and code examples where appropriate.";
+
+    let steps_summary = plan
+        .steps
+        .iter()
+        .map(|s| format!("- {}: {}", s.title, s.rationale))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "Generate content for the following deliverable:\n\n\
+        Deliverable: {}\n\
+        Task: {}\n\
+        Objective: {}\n\n\
+        Steps in the plan:\n{}\n\n\
+        Deliverables list:\n{}\n\n\
+        Known risks:\n{}\n\n\
+        Produce a complete, detailed markdown document for this deliverable.",
+        deliverable,
+        plan.task_id,
+        plan.objective,
+        steps_summary,
+        plan.deliverables.join("\n"),
+        plan.risks.join("\n"),
+    );
+
+    let response = crate::llm_fallback::call_llm_sync(&prompt, Some(system))?;
+    Ok(response.content)
 }
 
 fn execute_verification_actions(
