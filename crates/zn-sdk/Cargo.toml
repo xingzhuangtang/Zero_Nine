@@ -16,3 +16,7 @@ zn-spec = { path = "../zn-spec" }
 zn-exec = { path = "../zn-exec" }
 zn-loop = { path = "../zn-loop" }
 zn-host = { path = "../zn-host" }
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile = "3"
