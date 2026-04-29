@@ -86,8 +86,8 @@ pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
             "evidence-driven-verification".to_string()
         },
         task_type: "task_execution".to_string(),
-        latency_ms: 150,
-        token_cost: 0,
+        latency_ms: report.execution_time_ms,
+        token_cost: report.token_count,
         score,
         notes,
     }
@@ -102,6 +102,28 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
         .collect::<Vec<_>>();
 
     if report.outcome == ExecutionOutcome::Completed && report.success {
+        // Confidence based on evidence completeness and verdict strength
+        let evidence_total = report.evidence.iter().filter(|e| e.required).count() as f32;
+        let evidence_collected = report
+            .evidence
+            .iter()
+            .filter(|e| e.required && e.status == EvidenceStatus::Collected)
+            .count() as f32;
+        let evidence_ratio = if evidence_total > 0.0 {
+            evidence_collected / evidence_total
+        } else {
+            1.0
+        };
+        let verdict_bonus = match (&report.review_verdict, &report.verification_verdict) {
+            (Some(r), Some(v))
+                if r.status == VerdictStatus::Passed && v.status == VerdictStatus::Passed =>
+            {
+                0.15
+            }
+            _ => 0.0,
+        };
+        let confidence: f32 = (0.60f32 + evidence_ratio * 0.25 + verdict_bonus).min(0.95);
+
         Some(EvolutionCandidate {
             source_skill: "guarded-execution".to_string(),
             kind: EvolutionKind::AutoImprove,
@@ -115,10 +137,17 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
                     missing_keys.join(", ")
                 }
             ),
-            confidence: 0.76,
+            confidence,
             created_at: Utc::now(),
         })
     } else {
+        // Confidence based on diagnostic richness
+        let has_failure_summary = report.failure_summary.as_ref().map_or(false, |s| !s.is_empty());
+        let has_agent_runs = !report.agent_runs.is_empty();
+        let diagnostic_bonus = if has_failure_summary { 0.10 } else { 0.0 }
+            + if has_agent_runs { 0.05 } else { 0.0 };
+        let confidence: f32 = (0.55f32 + diagnostic_bonus).min(0.85);
+
         Some(EvolutionCandidate {
             source_skill: "evidence-driven-verification".to_string(),
             kind: match report.outcome {
@@ -143,7 +172,7 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
                     .clone()
                     .unwrap_or_else(|| "none".to_string())
             ),
-            confidence: 0.83,
+            confidence,
             created_at: Utc::now(),
         })
     }
@@ -197,9 +226,12 @@ pub fn consume_candidates(project_root: &std::path::Path, task_id: &str) -> Opti
             }
         }
 
-        // Mark as consumed by renaming
+        // Mark as consumed by renaming (skip if target already exists to avoid races)
         let new_name = format!("{}.consumed.json", filename);
-        let consumed_path = path.parent().unwrap().join(&new_name);
+        let consumed_path = path.parent()?.join(&new_name);
+        if consumed_path.exists() {
+            continue;
+        }
         let _ = fs::rename(&path, &consumed_path);
         consumed_any = true;
     }

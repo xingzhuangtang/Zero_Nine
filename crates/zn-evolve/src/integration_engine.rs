@@ -100,6 +100,24 @@ pub struct EngineSnapshot {
     pub integrated_decision: IntegratedDecision,
 }
 
+/// 重置引擎所有子系统为干净状态（用于新项目）
+pub struct EnginePaths {
+    reward_file: std::path::PathBuf,
+    curriculum_file: std::path::PathBuf,
+    belief_file: std::path::PathBuf,
+}
+
+impl EnginePaths {
+    fn new(project_root: &Path) -> Self {
+        let evolve_dir = project_root.join(".zero_nine/evolve");
+        Self {
+            reward_file: evolve_dir.join("pairwise_comparisons.ndjson"),
+            curriculum_file: evolve_dir.join("curriculum_history.ndjson"),
+            belief_file: evolve_dir.join("belief_states.ndjson"),
+        }
+    }
+}
+
 impl IntegrationEngine {
     /// 创建新的集成引擎
     pub fn new(project_root: &Path) -> Result<Self> {
@@ -299,12 +317,16 @@ impl IntegrationEngine {
         Ok(())
     }
 
-    /// 重置引擎状态（用于新项目）
-    pub fn reset(&mut self) {
-        self.reward_model = RewardModel::new(std::path::PathBuf::from("/tmp/reward_reset.ndjson"))
-            .unwrap_or_else(|_| {
-                RewardModel::new(std::path::PathBuf::from("/tmp/reward.ndjson")).unwrap()
-            });
+    /// 重置引擎所有子系统为干净状态（用于新项目）
+    pub fn reset(&mut self, project_root: &Path) -> Result<()> {
+        let paths = EnginePaths::new(project_root);
+        self.reward_model =
+            RewardModel::new(paths.reward_file).context("Failed to reset reward model")?;
+        self.curriculum_manager = CurriculumManager::new(paths.curriculum_file)
+            .context("Failed to reset curriculum manager")?;
+        self.belief_tracker =
+            BeliefTracker::new(paths.belief_file).context("Failed to reset belief tracker")?;
+        Ok(())
     }
 }
 
