@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::process::Command;
 use zn_types::{
-    ActualProjectState, DesiredProjectState, DriftCheckResult, DriftReport, DriftSeverity,
-    ExecutionPlan, Proposal, StateDiff, WorkspaceStrategy,
+    ActualProjectState, CompensationAction, CompensationType, DesiredProjectState,
+    DriftCheckResult, DriftReport, DriftSeverity, ExecutionPlan, LoopStage, Proposal, StateDiff,
+    WorkspaceStrategy,
 };
 
 /// Capture the actual current state of the project workspace
@@ -231,4 +232,151 @@ fn detect_remote_capabilities(project_root: &Path) -> Vec<String> {
         caps.push("gh_cli".to_string());
     }
     caps
+}
+
+// ============================================================================
+// T2.3: State Machine Consistency Check
+// ============================================================================
+
+/// Verify that the LoopStage state machine is consistent with the actual Git worktree state.
+///
+/// Detects "ghost branches" (worktrees referencing deleted branches) and
+/// uncommitted changes that could cause state machine misalignment.
+pub fn check_state_machine_consistency(
+    project_root: &Path,
+    current_stage: &LoopStage,
+) -> Vec<StateDiff> {
+    let mut diffs = Vec::new();
+
+    // Check: RunningTask/Verifying/Retrying stages require a clean worktree
+    if matches!(
+        current_stage,
+        LoopStage::RunningTask | LoopStage::Verifying | LoopStage::Retrying
+    ) {
+        let dirty = run_git(project_root, &["status", "--porcelain"])
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if dirty {
+            diffs.push(StateDiff {
+                field: "stage:worktree_consistency".to_string(),
+                severity: DriftSeverity::Dangerous,
+                expected: "clean worktree during active execution".to_string(),
+                actual: "dirty worktree".to_string(),
+                message: format!(
+                    "Stage {:?} requires clean worktree but uncommitted changes detected",
+                    current_stage
+                ),
+            });
+        }
+    }
+
+    // Check: Completed/Escalated stage should have no lingering worktrees for active tasks
+    if matches!(current_stage, LoopStage::Completed | LoopStage::Escalated) {
+        if let Some(output) = run_git(project_root, &["worktree", "list", "--porcelain"]) {
+            for line in output.lines() {
+                if line.starts_with("worktree ") && line.contains("zero-nine/task-") {
+                    diffs.push(StateDiff {
+                        field: "stage:lingering_worktree".to_string(),
+                        severity: DriftSeverity::Warning,
+                        expected: "no task worktrees after completion".to_string(),
+                        actual: format!("found worktree: {}", line),
+                        message: "Lingering task worktree after proposal completion".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Check: Ghost branches — branches from zero-nine/ that no longer have proposals
+    if let Some(branches_output) = run_git(project_root, &["branch", "--list", "zero-nine/*"]) {
+        for branch in branches_output.lines() {
+            let branch_name = branch.trim().trim_start_matches("* ").trim();
+            if branch_name.is_empty() {
+                continue;
+            }
+            // Check if corresponding proposal directory exists
+            let task_id = branch_name.trim_start_matches("zero-nine/");
+            let proposal_dir = project_root
+                .join(".zero_nine/proposals")
+                .read_dir()
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .any(|e| {
+                    e.path()
+                        .join(format!("task-{}-report.md", task_id))
+                        .exists()
+                        || e.path()
+                            .join(format!("task-{}-envelope.json", task_id))
+                            .exists()
+                });
+            if !proposal_dir {
+                diffs.push(StateDiff {
+                    field: format!("ghost_branch:{}", branch_name),
+                    severity: DriftSeverity::Info,
+                    expected: "branch should not exist".to_string(),
+                    actual: branch_name.to_string(),
+                    message: "Ghost branch with no corresponding proposal data".to_string(),
+                });
+            }
+        }
+    }
+
+    diffs
+}
+
+// ============================================================================
+// T2.3: Drift Compensation
+// ============================================================================
+
+/// Generate compensation actions for detected drift.
+///
+/// Returns a list of actions that can clean up the workspace state.
+pub fn generate_compensation_actions(
+    project_root: &Path,
+    diffs: &[StateDiff],
+) -> Vec<CompensationAction> {
+    let mut actions = Vec::new();
+
+    for diff in diffs {
+        match diff.field.as_str() {
+            "worktree_clean" | "stage:worktree_consistency" => {
+                if matches!(
+                    diff.severity,
+                    DriftSeverity::Dangerous | DriftSeverity::Blocking
+                ) {
+                    actions.push(CompensationAction {
+                        action_type: CompensationType::ResetWorkspace,
+                        target: "HEAD".to_string(),
+                        reason: format!("Drift compensation: {}", diff.message),
+                        executed: false,
+                    });
+                }
+            }
+            f if f.starts_with("ghost_branch:") => {
+                let branch = f.strip_prefix("ghost_branch:").unwrap_or(f);
+                actions.push(CompensationAction {
+                    action_type: CompensationType::DeleteBranch,
+                    target: branch.to_string(),
+                    reason: format!("Drift compensation: {}", diff.message),
+                    executed: false,
+                });
+            }
+            f if f.starts_with("stage:lingering_worktree") => {
+                // Extract worktree path from the diff
+                if let Some(path) = diff.actual.strip_prefix("found worktree: ") {
+                    actions.push(CompensationAction {
+                        action_type: CompensationType::DeleteWorktree,
+                        target: path.to_string(),
+                        reason: format!("Drift compensation: {}", diff.message),
+                        executed: false,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    actions
 }
