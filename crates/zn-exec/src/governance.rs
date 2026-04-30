@@ -700,3 +700,154 @@ mod tests {
         assert!(rendered.contains("Risk Level**: high"));
     }
 }
+
+// ============================================================================
+// T2.2: Pluggable Verification Gates
+// ============================================================================
+
+/// Gate execution phase — when the gate intercepts the workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatePhase {
+    /// Checks before task execution (preconditions, environment readiness)
+    PreExecution,
+    /// Checks after task execution (test results, review verdicts, artifact completeness)
+    PostExecution,
+}
+
+/// Result of a verification gate evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateResult {
+    /// Whether the gate passed
+    pub passed: bool,
+    /// Human-readable summary
+    pub summary: String,
+    /// Optional evidence paths (test reports, review outputs, etc.)
+    pub evidence_paths: Vec<String>,
+    /// Optional error details
+    pub error: Option<String>,
+}
+
+/// Pluggable verification gate interface.
+///
+/// Implement this trait to add custom verification logic that runs
+/// at specific points in the execution lifecycle.
+pub trait VerificationGate: Send + Sync {
+    /// Unique identifier for this gate (e.g., "cargo-test", "clippy-check")
+    fn gate_id(&self) -> &str;
+
+    /// Which phase this gate operates in
+    fn phase(&self) -> GatePhase;
+
+    /// Execute the gate check.
+    ///
+    /// # Arguments
+    /// * `project_root` — root path of the project
+    /// * `task_id` — the task being verified
+    /// * `context` — gate-specific context data (e.g., worktree path, test command)
+    fn evaluate(
+        &self,
+        project_root: &std::path::Path,
+        task_id: &str,
+        context: &GateContext,
+    ) -> GateResult;
+}
+
+/// Context data passed to verification gates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GateContext {
+    /// Worktree path (if applicable)
+    pub worktree_path: Option<String>,
+    /// Test command to run (e.g., "cargo test")
+    pub test_command: Option<String>,
+    /// Review command to run (e.g., "cargo clippy")
+    pub review_command: Option<String>,
+    /// Required deliverables to check for
+    pub required_deliverables: Vec<String>,
+    /// Additional free-form context
+    pub extra: HashMap<String, String>,
+}
+
+/// Default gate: run a shell command and check exit code.
+#[derive(Debug, Clone)]
+pub struct CommandGate {
+    pub id: String,
+    pub command: String,
+    pub phase: GatePhase,
+    pub required: bool,
+}
+
+impl VerificationGate for CommandGate {
+    fn gate_id(&self) -> &str {
+        &self.id
+    }
+
+    fn phase(&self) -> GatePhase {
+        self.phase
+    }
+
+    fn evaluate(
+        &self,
+        _project_root: &std::path::Path,
+        task_id: &str,
+        _context: &GateContext,
+    ) -> GateResult {
+        match std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&self.command)
+            .output()
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    GateResult {
+                        passed: true,
+                        summary: format!("Gate '{}' passed for task {}", self.id, task_id),
+                        evidence_paths: vec![],
+                        error: None,
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let error_msg = if self.required {
+                        format!(
+                            "Required gate '{}' failed for task {}: {}",
+                            self.id, task_id, stderr
+                        )
+                    } else {
+                        format!(
+                            "Optional gate '{}' failed for task {} (non-blocking)",
+                            self.id, task_id
+                        )
+                    };
+                    GateResult {
+                        passed: !self.required,
+                        summary: error_msg.clone(),
+                        evidence_paths: vec![],
+                        error: Some(error_msg),
+                    }
+                }
+            }
+            Err(e) => GateResult {
+                passed: !self.required,
+                summary: format!(
+                    "Gate '{}' could not execute for task {}: {}",
+                    self.id, task_id, e
+                ),
+                evidence_paths: vec![],
+                error: Some(format!("Execution error: {}", e)),
+            },
+        }
+    }
+}
+
+/// Run a set of gates and aggregate results.
+pub fn run_gates(
+    project_root: &std::path::Path,
+    task_id: &str,
+    gates: &[Box<dyn VerificationGate>],
+    context: &GateContext,
+) -> Vec<GateResult> {
+    gates
+        .iter()
+        .map(|gate| gate.evaluate(project_root, task_id, context))
+        .collect()
+}

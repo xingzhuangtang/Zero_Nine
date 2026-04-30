@@ -16,19 +16,17 @@ use std::process::Command;
 use tracing::info;
 use uuid::Uuid;
 use zn_types::{
-    AgentRunRecord, BrainstormSession, BrainstormVerdict, BranchFinishPreview,
-    BranchFinishRequest, ClarificationAnswer, ClarificationQuestion, ContextArtifact,
-    ContextInjectionProtocol, EvidenceKind, EvidenceRecord, EvidenceStatus,
-    ExecutionEnvelope, ExecutionMode, ExecutionOutcome, ExecutionPlan, ExecutionReport,
-    FailureCategory, FailureClassification, FailureSeverity,
+    AgentRunRecord, BrainstormError, BrainstormSession, BrainstormVerdict, BranchFinishPreview,
+    BranchFinishRequest, ClarificationAnswer, ClarificationQuestion, CompensationAction,
+    CompensationType, ContextArtifact, ContextInjectionProtocol, EvidenceKind, EvidenceRecord,
+    EvidenceStatus, ExecutionEnvelope, ExecutionError, ExecutionMode, ExecutionOutcome,
+    ExecutionPlan, ExecutionReport, FailureCategory, FailureClassification, FailureSeverity,
     FinishBranchAction, FinishBranchAutomation, FinishBranchResult, FinishBranchStatus,
     GeneratedArtifact, HostKind, PlanStep, QualityGate, ReviewVerdict, SubagentBrief,
-    SubagentDispatch, SubagentExecutionRuntime, SubagentRecoveryLedger, SubagentRecoveryRecord,
-    SubagentRunBook, SubagentRunStatus, SubagentExecutionPath, TaskItem, VerificationAction, VerificationActionResult,
-    VerificationVerdict, VerdictStatus,
-    WorkspacePreparationResult, WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy,
-    WorktreePlan, CompensationAction, CompensationType,
-    BrainstormError, ExecutionError,
+    SubagentDispatch, SubagentExecutionPath, SubagentExecutionRuntime, SubagentRecoveryLedger,
+    SubagentRecoveryRecord, SubagentRunBook, SubagentRunStatus, TaskItem, VerdictStatus,
+    VerificationAction, VerificationActionResult, VerificationVerdict, WorkspacePreparationResult,
+    WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy, WorktreePlan,
 };
 
 // Bridge client module for gRPC agent communication
@@ -36,7 +34,9 @@ pub mod bridge_client;
 
 /// Layer 13: Cross-Cutting Observability
 pub mod observability;
-pub use observability::{EventEmitter, MetricsAggregator, EventQuery, create_default_observability};
+pub use observability::{
+    create_default_observability, EventEmitter, EventQuery, MetricsAggregator,
+};
 pub use zn_types::TraceContext;
 
 // Subagent dispatcher module
@@ -44,7 +44,10 @@ pub mod subagent_dispatcher;
 
 // LLM fallback module — direct API calls when CLI unavailable
 pub mod llm_fallback;
-pub use llm_fallback::{call_llm_sync, execute_dispatch_via_llm, ParsedLlmResponse, parse_llm_response, write_parsed_files};
+pub use llm_fallback::{
+    call_llm_sync, execute_dispatch_via_llm, parse_llm_response, write_parsed_files,
+    ParsedLlmResponse,
+};
 
 // Governance module
 pub mod governance;
@@ -55,12 +58,20 @@ pub use bridge_handler::LocalCliHandler;
 
 // Token counter and output optimizer
 pub mod token_counter;
-pub use token_counter::{TokenCounter, OutputOptimizer, TokenBudget};
+pub use token_counter::{OutputOptimizer, TokenBudget, TokenCounter};
 
 // Re-export proto types for convenience
+pub use governance::{
+    render_approval_ticket, run_gates, ActionType, ApprovalStatus, ApprovalTicket,
+    AuthorizationCheckResult, AuthorizationMatrix, AuthorizationRequirement, CommandGate,
+    GateContext, GatePhase, GateResult, GovernanceStats, PolicyEngine, RiskLevel, TokenBudgetCheck,
+    TokenBudgetStatus, VerificationGate,
+};
+pub use subagent_dispatcher::{
+    compute_tri_role_verdict, create_dispatcher, is_claude_available, DispatchResult,
+    SubagentContext, SubagentDispatcher, SubagentExecutionReport, TriRoleVerdict,
+};
 pub use zn_bridge::proto;
-pub use subagent_dispatcher::{SubagentDispatcher, DispatchResult, SubagentContext, SubagentExecutionReport, is_claude_available, create_dispatcher, TriRoleVerdict, compute_tri_role_verdict};
-pub use governance::{PolicyEngine, AuthorizationMatrix, ApprovalTicket, ApprovalStatus, RiskLevel, ActionType, AuthorizationRequirement, AuthorizationCheckResult, GovernanceStats, render_approval_ticket, TokenBudgetCheck, TokenBudgetStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -167,7 +178,11 @@ pub fn start_brainstorm(goal: &str, host: HostKind) -> BrainstormSession {
 }
 
 pub fn next_brainstorm_question(session: &BrainstormSession) -> Option<ClarificationQuestion> {
-    session.questions.iter().find(|question| !question.answered).cloned()
+    session
+        .questions
+        .iter()
+        .find(|question| !question.answered)
+        .cloned()
 }
 
 pub fn answer_brainstorm_question(
@@ -215,7 +230,11 @@ pub fn answer_brainstorm_question(
 }
 
 pub fn brainstorm_verdict(session: &BrainstormSession) -> BrainstormVerdict {
-    let unanswered = session.questions.iter().filter(|item| !item.answered).count();
+    let unanswered = session
+        .questions
+        .iter()
+        .filter(|item| !item.answered)
+        .count();
     if unanswered > 0 {
         return BrainstormVerdict::Continue;
     }
@@ -233,7 +252,10 @@ pub fn brainstorm_verdict(session: &BrainstormSession) -> BrainstormVerdict {
 }
 
 fn word_count(input: &str) -> usize {
-    input.split_whitespace().filter(|item| !item.is_empty()).count()
+    input
+        .split_whitespace()
+        .filter(|item| !item.is_empty())
+        .count()
 }
 
 pub fn classify_task(task: &TaskItem) -> TaskKind {
@@ -242,33 +264,56 @@ pub fn classify_task(task: &TaskItem) -> TaskKind {
     let haystack = format!("{} {}", title, description);
     let tokenized = tokenize_keywords(&haystack);
 
-    if haystack.contains("brainstorm") || haystack.contains("clarify") || tokenized.iter().any(|item| item == "requirement") {
+    if haystack.contains("brainstorm")
+        || haystack.contains("clarify")
+        || tokenized.iter().any(|item| item == "requirement")
+    {
         TaskKind::Brainstorming
     } else if haystack.contains("openspec")
-        || tokenized.iter().any(|item| matches!(item.as_str(), "proposal" | "design" | "dag"))
+        || tokenized
+            .iter()
+            .any(|item| matches!(item.as_str(), "proposal" | "design" | "dag"))
     {
         TaskKind::SpecCapture
     } else if haystack.contains("writing-plans")
         || haystack.contains("execution plan")
-        || tokenized.iter().any(|item| matches!(item.as_str(), "worktree" | "sandbox" | "planning"))
+        || tokenized
+            .iter()
+            .any(|item| matches!(item.as_str(), "worktree" | "sandbox" | "planning"))
     {
         TaskKind::Planning
     } else if haystack.contains("finish branch")
         || haystack.contains("pull request")
-        || tokenized.iter().any(|item| matches!(item.as_str(), "finish" | "merge" | "pr"))
+        || tokenized
+            .iter()
+            .any(|item| matches!(item.as_str(), "finish" | "merge" | "pr"))
     {
         TaskKind::FinishBranch
     } else if haystack.contains("verify implementation")
         || haystack.contains("verification evidence")
-        || (tokenized.iter().any(|item| matches!(item.as_str(), "verify" | "verification"))
-            && tokenized.iter().any(|item| matches!(item.as_str(), "progress" | "evolve")))
+        || (tokenized
+            .iter()
+            .any(|item| matches!(item.as_str(), "verify" | "verification"))
+            && tokenized
+                .iter()
+                .any(|item| matches!(item.as_str(), "progress" | "evolve")))
     {
         TaskKind::Verification
     } else if haystack.contains("execute guarded")
-        || tokenized.iter().any(|item| matches!(item.as_str(), "implementation" | "develop" | "developer" | "coding"))
+        || tokenized.iter().any(|item| {
+            matches!(
+                item.as_str(),
+                "implementation" | "develop" | "developer" | "coding"
+            )
+        })
     {
         TaskKind::Implementation
-    } else if tokenized.iter().any(|item| matches!(item.as_str(), "verify" | "verification" | "review" | "evolve" | "progress")) {
+    } else if tokenized.iter().any(|item| {
+        matches!(
+            item.as_str(),
+            "verify" | "verification" | "review" | "evolve" | "progress"
+        )
+    }) {
         TaskKind::Verification
     } else {
         TaskKind::Implementation
@@ -293,7 +338,12 @@ pub fn build_execution_envelope(
     let execution_mode = mode_for(kind);
     let workspace_strategy = workspace_for(kind);
     let quality_gates = quality_gates_for(kind);
-    let context_protocol = Some(context_protocol_for(task, host, execution_mode.clone(), &context_files));
+    let context_protocol = Some(context_protocol_for(
+        task,
+        host,
+        execution_mode.clone(),
+        &context_files,
+    ));
 
     ExecutionEnvelope {
         proposal_id: proposal_id.to_string(),
@@ -375,7 +425,9 @@ pub fn execute_subagent_dispatch(
     let proposal_id = plan.task_id.as_str();
     let task_id = plan.task_id.as_str();
 
-    let Ok(mut dispatcher) = SubagentDispatcher::new(project_root, proposal_id, task_id, plan.skill_chain.clone()) else {
+    let Ok(mut dispatcher) =
+        SubagentDispatcher::new(project_root, proposal_id, task_id, plan.skill_chain.clone())
+    else {
         return SubagentExecutionOutcome {
             agent_runs: Vec::new(),
             evidence: Vec::new(),
@@ -503,10 +555,7 @@ pub fn generate_compensation_actions(
     }
 
     // Sandboxed strategy: clean up sandbox artifacts
-    if matches!(
-        plan.workspace_strategy,
-        WorkspaceStrategy::Sandboxed
-    ) {
+    if matches!(plan.workspace_strategy, WorkspaceStrategy::Sandboxed) {
         actions.push(CompensationAction {
             action_type: CompensationType::CleanupArtifacts,
             target: format!(".zero_nine/sandboxes/{}", plan.task_id),
@@ -560,9 +609,7 @@ pub fn execute_plan(
 
     // M9: Select subagent execution path based on plan configuration
     let subagent_outcome = match &plan.execution_path {
-        SubagentExecutionPath::Cli => {
-            execute_subagent_dispatch(project_root, plan)
-        }
+        SubagentExecutionPath::Cli => execute_subagent_dispatch(project_root, plan),
         SubagentExecutionPath::Bridge => {
             match execute_plan_via_bridge(project_root, task, plan, 300) {
                 Ok(report) => SubagentExecutionOutcome::from_report(&report),
@@ -592,7 +639,11 @@ pub fn execute_plan(
     if !subagent_outcome.agent_runs.is_empty() {
         details.push(format!(
             "Subagent execution: {}/{} succeeded",
-            subagent_outcome.agent_runs.iter().filter(|r| r.status == subagent_dispatcher::AGENT_STATUS_COMPLETED).count(),
+            subagent_outcome
+                .agent_runs
+                .iter()
+                .filter(|r| r.status == subagent_dispatcher::AGENT_STATUS_COMPLETED)
+                .count(),
             subagent_outcome.agent_runs.len()
         ));
     }
@@ -617,7 +668,8 @@ pub fn execute_plan(
         .iter()
         .any(|gate| gate.name == "review" && gate.required);
     let tests_passed = verification_status(&verification_action_results, "tests", !tests_required);
-    let review_passed = verification_status(&verification_action_results, "review", !review_required);
+    let review_passed =
+        verification_status(&verification_action_results, "review", !review_required);
 
     let finish_branch_result = execute_finish_branch_if_needed(
         project_root,
@@ -628,9 +680,15 @@ pub fn execute_plan(
 
     // P0-B: Safety policy enforcement — block merge/push without passing gates
     if let Some(result) = &finish_branch_result {
-        let is_merge = matches!(result.action, FinishBranchAction::Merge | FinishBranchAction::PullRequest);
+        let is_merge = matches!(
+            result.action,
+            FinishBranchAction::Merge | FinishBranchAction::PullRequest
+        );
         if is_merge && (!tests_passed || !review_passed) {
-            details.push("SAFETY: Merge blocked by policy — tests and review must pass before merge/push".to_string());
+            details.push(
+                "SAFETY: Merge blocked by policy — tests and review must pass before merge/push"
+                    .to_string(),
+            );
             let mut blocked_result = result.clone();
             blocked_result.status = FinishBranchStatus::Rejected;
             blocked_result.summary = format!(
@@ -665,9 +723,15 @@ pub fn execute_plan(
     } else if !tests_passed && !review_passed {
         Some("Both tests and review gates failed in the same execution cycle; manual investigation is required before retrying.".to_string())
     } else if !tests_passed {
-        Some("Required test gates did not pass; revise the implementation and retry verification.".to_string())
+        Some(
+            "Required test gates did not pass; revise the implementation and retry verification."
+                .to_string(),
+        )
     } else if !review_passed {
-        Some("Required review gates did not pass; address review findings before retrying.".to_string())
+        Some(
+            "Required review gates did not pass; address review findings before retrying."
+                .to_string(),
+        )
     } else {
         Some("Execution did not satisfy all completion gates.".to_string())
     };
@@ -753,22 +817,32 @@ pub fn execute_plan(
 pub fn classify_failure(report: &ExecutionReport) -> FailureClassification {
     // Check workspace drift indicators
     if let Some(ref record) = report.workspace_record {
-        if record.notes.iter().any(|n| n.to_lowercase().contains("drift") || n.to_lowercase().contains("branch mismatch")) {
+        if record.notes.iter().any(|n| {
+            n.to_lowercase().contains("drift") || n.to_lowercase().contains("branch mismatch")
+        }) {
             return FailureClassification {
                 id: format!("failure:{}", report.task_id),
                 category: FailureCategory::EnvironmentDrift,
                 severity: FailureSeverity::High,
                 description: report.failure_summary.clone().unwrap_or_default(),
-                root_cause: Some("Workspace environment has drifted from expected state".to_string()),
+                root_cause: Some(
+                    "Workspace environment has drifted from expected state".to_string(),
+                ),
                 retry_recommended: false,
                 human_intervention_required: true,
-                suggested_fix: Some("Re-sync workspace with expected state before retrying".to_string()),
+                suggested_fix: Some(
+                    "Re-sync workspace with expected state before retrying".to_string(),
+                ),
             };
         }
     }
 
     // Check verification failures
-    if report.verification_action_results.iter().any(|r| r.status.to_lowercase().contains("fail")) {
+    if report
+        .verification_action_results
+        .iter()
+        .any(|r| r.status.to_lowercase().contains("fail"))
+    {
         return FailureClassification {
             id: format!("failure:{}", report.task_id),
             category: FailureCategory::VerificationFailed,
@@ -777,7 +851,9 @@ pub fn classify_failure(report: &ExecutionReport) -> FailureClassification {
             root_cause: Some("Verification gate did not pass".to_string()),
             retry_recommended: true,
             human_intervention_required: false,
-            suggested_fix: Some("Review verification evidence and adjust implementation".to_string()),
+            suggested_fix: Some(
+                "Review verification evidence and adjust implementation".to_string(),
+            ),
         };
     }
 
@@ -810,7 +886,11 @@ pub fn classify_failure(report: &ExecutionReport) -> FailureClassification {
     }
 
     // Check subagent run failures
-    if report.agent_runs.iter().any(|r| r.status.to_lowercase().contains("fail")) {
+    if report
+        .agent_runs
+        .iter()
+        .any(|r| r.status.to_lowercase().contains("fail"))
+    {
         return FailureClassification {
             id: format!("failure:{}", report.task_id),
             category: FailureCategory::ToolError,
@@ -934,7 +1014,11 @@ This file was automatically generated as part of the execution plan.
         deliverable,
         plan.task_id,
         plan.objective,
-        plan.steps.iter().map(|s| format!("- {}", s.title)).collect::<Vec<_>>().join("\n"),
+        plan.steps
+            .iter()
+            .map(|s| format!("- {}", s.title))
+            .collect::<Vec<_>>()
+            .join("\n"),
         plan.deliverables.join("\n"),
         plan.risks.join("\n"),
     )
@@ -1171,21 +1255,61 @@ struct CommandOutcome {
 fn run_shell_command(project_root: &Path, command: &str, context: &str) -> Result<CommandOutcome> {
     // 允许的命令白名单 (安全修复: 不包含 shell 解释器)
     const ALLOWED_COMMANDS: &[&str] = &[
-        "cargo", "npm", "yarn", "pnpm", "bun", "node",
-        "git", "go", "python", "python3", "pip", "pip3",
-        "bundle", "rake", "mix", "elixir", "rustc",
-        "make", "cmake",
-        "ls", "cat", "grep", "find", "head", "tail",
-        "jq", "sed", "awk", "diff", "patch",
-        "docker", "docker-compose",
-        "printf", "echo", "touch", "mkdir", "rm", "cp", "mv",
-        "pwd", "whoami", "hostname", "uname", "date", "sleep",
-        "true", "false", "test",
+        "cargo",
+        "npm",
+        "yarn",
+        "pnpm",
+        "bun",
+        "node",
+        "git",
+        "go",
+        "python",
+        "python3",
+        "pip",
+        "pip3",
+        "bundle",
+        "rake",
+        "mix",
+        "elixir",
+        "rustc",
+        "make",
+        "cmake",
+        "ls",
+        "cat",
+        "grep",
+        "find",
+        "head",
+        "tail",
+        "jq",
+        "sed",
+        "awk",
+        "diff",
+        "patch",
+        "docker",
+        "docker-compose",
+        "printf",
+        "echo",
+        "touch",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "pwd",
+        "whoami",
+        "hostname",
+        "uname",
+        "date",
+        "sleep",
+        "true",
+        "false",
+        "test",
     ];
 
     // 安全修复: 拒绝包含 shell 操作符的命令
     // 不再使用 sh -c 执行，避免命令注入 (shell operators: &&, ||, ;, |, $, `, etc.)
-    let forbidden_operators = ["&&", "||", ";", "|", "$", "`", "(", ")", "{", "}", ">", "<", "!"];
+    let forbidden_operators = [
+        "&&", "||", ";", "|", "$", "`", "(", ")", "{", "}", ">", "<", "!",
+    ];
     for op in &forbidden_operators {
         if command.contains(op) {
             return Err(anyhow::anyhow!(
@@ -1355,29 +1479,43 @@ fn finish_branch_automation_for(
         ],
         requires_clean_tree: true,
         preview_commands: vec![
-            format!("git status --short && git branch --show-current # expect {}", branch_name),
+            format!(
+                "git status --short && git branch --show-current # expect {}",
+                branch_name
+            ),
             format!("gh pr create --head {} --fill", branch_name),
         ],
     })
 }
 
-pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<WorkspacePreparationResult> {
+pub fn prepare_workspace(
+    project_root: &Path,
+    plan: &ExecutionPlan,
+) -> Result<WorkspacePreparationResult> {
     match plan.workspace_strategy {
         WorkspaceStrategy::InPlace => {
             let now = Utc::now();
             let record = WorkspaceRecord {
                 strategy: WorkspaceStrategy::InPlace,
                 status: WorkspaceStatus::Active,
-                branch_name: git_current_branch(project_root).unwrap_or_else(|_| "in-place".to_string()),
+                branch_name: git_current_branch(project_root)
+                    .unwrap_or_else(|_| "in-place".to_string()),
                 worktree_path: project_root.display().to_string(),
                 base_branch: git_current_branch(project_root).ok(),
                 head_branch: git_current_branch(project_root).ok(),
                 created_at: now,
                 updated_at: now,
-                notes: vec!["Task runs in the project root without creating a separate worktree.".to_string()],
+                notes: vec![
+                    "Task runs in the project root without creating a separate worktree."
+                        .to_string(),
+                ],
             };
             let mut created_paths = vec![project_root.display().to_string()];
-            created_paths.extend(persist_workspace_preparation_artifacts(project_root, plan, &record)?);
+            created_paths.extend(persist_workspace_preparation_artifacts(
+                project_root,
+                plan,
+                &record,
+            )?);
             Ok(WorkspacePreparationResult {
                 success: true,
                 summary: "Workspace strategy is in-place; no new worktree was created.".to_string(),
@@ -1408,7 +1546,11 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
                     ],
                 };
                 let mut created_paths = vec![project_root.display().to_string()];
-                created_paths.extend(persist_workspace_preparation_artifacts(project_root, plan, &record)?);
+                created_paths.extend(persist_workspace_preparation_artifacts(
+                    project_root,
+                    plan,
+                    &record,
+                )?);
                 return Ok(WorkspacePreparationResult {
                     success: true,
                     summary: "Repository has no initial commit yet, so Zero_Nine skipped git worktree creation and continued in-place for this task.".to_string(),
@@ -1419,11 +1561,17 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
 
             let abs_path = normalize_worktree_path(&repo_root, &worktree.worktree_path);
             if let Some(parent) = abs_path.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create worktree parent directory {}", parent.display()))?;
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "failed to create worktree parent directory {}",
+                        parent.display()
+                    )
+                })?;
             }
 
-            if abs_path.exists() && (abs_path.join(".git").exists() || abs_path.join(".git").is_file()) {
+            if abs_path.exists()
+                && (abs_path.join(".git").exists() || abs_path.join(".git").is_file())
+            {
                 let now = Utc::now();
                 let record = WorkspaceRecord {
                     strategy: WorkspaceStrategy::GitWorktree,
@@ -1434,10 +1582,17 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
                     head_branch: Some(worktree.branch_name.clone()),
                     created_at: now,
                     updated_at: now,
-                    notes: vec!["Reused an existing git worktree because the target path already exists.".to_string()],
+                    notes: vec![
+                        "Reused an existing git worktree because the target path already exists."
+                            .to_string(),
+                    ],
                 };
                 let mut created_paths = vec![abs_path.display().to_string()];
-                created_paths.extend(persist_workspace_preparation_artifacts(project_root, plan, &record)?);
+                created_paths.extend(persist_workspace_preparation_artifacts(
+                    project_root,
+                    plan,
+                    &record,
+                )?);
                 return Ok(WorkspacePreparationResult {
                     success: true,
                     summary: format!("Reused existing git worktree at {}", abs_path.display()),
@@ -1473,18 +1628,31 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
                 notes: vec![format!("Prepared git worktree for task {}.", plan.task_id)],
             };
             let mut created_paths = vec![abs_path.display().to_string()];
-            created_paths.extend(persist_workspace_preparation_artifacts(project_root, plan, &record)?);
+            created_paths.extend(persist_workspace_preparation_artifacts(
+                project_root,
+                plan,
+                &record,
+            )?);
             Ok(WorkspacePreparationResult {
                 success: true,
-                summary: format!("Prepared git worktree {} on branch {}", abs_path.display(), worktree.branch_name),
+                summary: format!(
+                    "Prepared git worktree {} on branch {}",
+                    abs_path.display(),
+                    worktree.branch_name
+                ),
                 record: Some(record),
                 created_paths,
             })
         }
         WorkspaceStrategy::Sandboxed => {
-            let sandbox_root = project_root.join(".zero_nine/sandboxes").join(&plan.task_id);
+            let sandbox_root = project_root
+                .join(".zero_nine/sandboxes")
+                .join(&plan.task_id);
             fs::create_dir_all(&sandbox_root).with_context(|| {
-                format!("failed to create sandbox directory {}", sandbox_root.display())
+                format!(
+                    "failed to create sandbox directory {}",
+                    sandbox_root.display()
+                )
             })?;
             let now = Utc::now();
             let record = WorkspaceRecord {
@@ -1496,10 +1664,16 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
                 head_branch: None,
                 created_at: now,
                 updated_at: now,
-                notes: vec!["Prepared a filesystem sandbox without git worktree integration.".to_string()],
+                notes: vec![
+                    "Prepared a filesystem sandbox without git worktree integration.".to_string(),
+                ],
             };
             let mut created_paths = vec![sandbox_root.display().to_string()];
-            created_paths.extend(persist_workspace_preparation_artifacts(project_root, plan, &record)?);
+            created_paths.extend(persist_workspace_preparation_artifacts(
+                project_root,
+                plan,
+                &record,
+            )?);
             Ok(WorkspacePreparationResult {
                 success: true,
                 summary: format!("Prepared sandbox at {}", sandbox_root.display()),
@@ -1524,7 +1698,10 @@ fn persist_workspace_preparation_artifacts(
     let markdown_path = artifact_dir.join("workspace-record.md");
 
     fs::write(&json_path, serde_json::to_vec_pretty(record)?)?;
-    fs::write(&markdown_path, render_workspace_record_markdown(plan, record))?;
+    fs::write(
+        &markdown_path,
+        render_workspace_record_markdown(plan, record),
+    )?;
 
     Ok(vec![
         json_path.display().to_string(),
@@ -1557,32 +1734,62 @@ fn render_workspace_record_markdown(plan: &ExecutionPlan, record: &WorkspaceReco
     )
 }
 
-pub fn preview_finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Result<BranchFinishPreview> {
+pub fn preview_finish_branch(
+    project_root: &Path,
+    request: &BranchFinishRequest,
+) -> Result<BranchFinishPreview> {
     let repo_root = git_toplevel(project_root)?;
     let mut warnings = Vec::new();
     if request.verify_clean && !git_is_clean(&repo_root)? {
         warnings.push("Repository has uncommitted changes; finish-branch should pause until the tree is clean.".to_string());
     }
     if !git_branch_exists(&repo_root, &request.branch_name)? {
-        warnings.push(format!("Branch {} does not exist yet.", request.branch_name));
+        warnings.push(format!(
+            "Branch {} does not exist yet.",
+            request.branch_name
+        ));
     }
 
     let mut commands = Vec::new();
     match request.action {
         FinishBranchAction::Merge => {
-            let target = git_current_branch(&repo_root).unwrap_or_else(|_| "<target-branch>".to_string());
-            commands.push(format!("git -C {} checkout {}", repo_root.display(), target));
-            commands.push(format!("git -C {} merge --no-ff {}", repo_root.display(), request.branch_name));
+            let target =
+                git_current_branch(&repo_root).unwrap_or_else(|_| "<target-branch>".to_string());
+            commands.push(format!(
+                "git -C {} checkout {}",
+                repo_root.display(),
+                target
+            ));
+            commands.push(format!(
+                "git -C {} merge --no-ff {}",
+                repo_root.display(),
+                request.branch_name
+            ));
         }
         FinishBranchAction::PullRequest => {
-            commands.push(format!("git -C {} push -u <remote> {}", repo_root.display(), request.branch_name));
-            commands.push(format!("gh pr create --head {} --fill", request.branch_name));
+            commands.push(format!(
+                "git -C {} push -u <remote> {}",
+                repo_root.display(),
+                request.branch_name
+            ));
+            commands.push(format!(
+                "gh pr create --head {} --fill",
+                request.branch_name
+            ));
         }
         FinishBranchAction::Discard => {
             if let Some(worktree_path) = &request.worktree_path {
-                commands.push(format!("git -C {} worktree remove --force {}", repo_root.display(), worktree_path));
+                commands.push(format!(
+                    "git -C {} worktree remove --force {}",
+                    repo_root.display(),
+                    worktree_path
+                ));
             }
-            commands.push(format!("git -C {} branch -D {}", repo_root.display(), request.branch_name));
+            commands.push(format!(
+                "git -C {} branch -D {}",
+                repo_root.display(),
+                request.branch_name
+            ));
         }
         FinishBranchAction::Keep => {
             commands.push("Keep the branch and worktree for another iteration.".to_string());
@@ -1604,11 +1811,16 @@ pub fn preview_finish_branch(project_root: &Path, request: &BranchFinishRequest)
     })
 }
 
-pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Result<FinishBranchResult> {
+pub fn finish_branch(
+    project_root: &Path,
+    request: &BranchFinishRequest,
+) -> Result<FinishBranchResult> {
     let repo_root = git_toplevel(project_root)?;
 
-    if matches!(request.action, FinishBranchAction::Merge | FinishBranchAction::PullRequest)
-        && !request.confirmed
+    if matches!(
+        request.action,
+        FinishBranchAction::Merge | FinishBranchAction::PullRequest
+    ) && !request.confirmed
     {
         let preview = preview_finish_branch(project_root, request)?;
         let mut follow_ups = vec![
@@ -1645,11 +1857,22 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
     match request.action {
         FinishBranchAction::Merge => {
             let mut merge = Command::new("git");
-            merge.arg("-C").arg(&repo_root).arg("merge").arg("--no-ff").arg(&request.branch_name);
+            merge
+                .arg("-C")
+                .arg(&repo_root)
+                .arg("merge")
+                .arg("--no-ff")
+                .arg(&request.branch_name);
             run_command(&mut merge, "failed to merge branch")?;
             if let Some(worktree_path) = &request.worktree_path {
                 let mut remove = Command::new("git");
-                remove.arg("-C").arg(&repo_root).arg("worktree").arg("remove").arg("--force").arg(worktree_path);
+                remove
+                    .arg("-C")
+                    .arg(&repo_root)
+                    .arg("worktree")
+                    .arg("remove")
+                    .arg("--force")
+                    .arg(worktree_path);
                 let _ = run_command(&mut remove, "failed to remove merged worktree");
             }
             Ok(FinishBranchResult {
@@ -1667,7 +1890,10 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
 
             let mut auth = Command::new("gh");
             auth.arg("auth").arg("status");
-            run_command(&mut auth, "failed to verify gh authentication before creating pull request")?;
+            run_command(
+                &mut auth,
+                "failed to verify gh authentication before creating pull request",
+            )?;
 
             let mut push = Command::new("git");
             push.arg("-C")
@@ -1676,7 +1902,10 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
                 .arg("-u")
                 .arg(&remote_name)
                 .arg(&request.branch_name);
-            run_command(&mut push, "failed to push branch before creating pull request")?;
+            run_command(
+                &mut push,
+                "failed to push branch before creating pull request",
+            )?;
 
             // M6: Use structured PR body if provided, otherwise fall back to --fill
             let pr_url = if let (Some(title), Some(body)) = (&request.pr_title, &request.pr_body) {
@@ -1722,12 +1951,23 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
         FinishBranchAction::Discard => {
             if let Some(worktree_path) = &request.worktree_path {
                 let mut remove = Command::new("git");
-                remove.arg("-C").arg(&repo_root).arg("worktree").arg("remove").arg("--force").arg(worktree_path);
+                remove
+                    .arg("-C")
+                    .arg(&repo_root)
+                    .arg("worktree")
+                    .arg("remove")
+                    .arg("--force")
+                    .arg(worktree_path);
                 let _ = run_command(&mut remove, "failed to remove discarded worktree");
             }
             if git_branch_exists(&repo_root, &request.branch_name)? {
                 let mut delete_branch = Command::new("git");
-                delete_branch.arg("-C").arg(&repo_root).arg("branch").arg("-D").arg(&request.branch_name);
+                delete_branch
+                    .arg("-C")
+                    .arg(&repo_root)
+                    .arg("branch")
+                    .arg("-D")
+                    .arg(&request.branch_name);
                 run_command(&mut delete_branch, "failed to delete discarded branch")?;
             }
             Ok(FinishBranchResult {
@@ -1746,7 +1986,10 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
             branch_name: request.branch_name.clone(),
             worktree_path: request.worktree_path.clone(),
             summary: format!("Kept branch {} for another iteration.", request.branch_name),
-            follow_ups: vec!["Resume implementation or verification before trying to finish the branch again.".to_string()],
+            follow_ups: vec![
+                "Resume implementation or verification before trying to finish the branch again."
+                    .to_string(),
+            ],
             pr_url: None,
         }),
     }
@@ -1824,7 +2067,9 @@ fn persist_subagent_runbook_artifacts(
         .collect::<Vec<_>>();
     let recovery_json_paths = dispatches
         .iter()
-        .map(|dispatch| artifact_dir.join(format!("recovery-{}.json", slugify_role(&dispatch.role))))
+        .map(|dispatch| {
+            artifact_dir.join(format!("recovery-{}.json", slugify_role(&dispatch.role)))
+        })
         .collect::<Vec<_>>();
     let recovery_md_paths = dispatches
         .iter()
@@ -1832,7 +2077,12 @@ fn persist_subagent_runbook_artifacts(
         .collect::<Vec<_>>();
     let evidence_archive_paths = dispatches
         .iter()
-        .map(|dispatch| artifact_dir.join(format!("evidence-archive-{}.md", slugify_role(&dispatch.role))))
+        .map(|dispatch| {
+            artifact_dir.join(format!(
+                "evidence-archive-{}.md",
+                slugify_role(&dispatch.role)
+            ))
+        })
         .collect::<Vec<_>>();
     let replay_script_paths = dispatches
         .iter()
@@ -1878,14 +2128,22 @@ fn persist_subagent_runbook_artifacts(
 
     for (idx, dispatch) in dispatches.iter().enumerate() {
         let dispatch_path = &dispatch_paths[idx];
-        fs::write(dispatch_path, render_subagent_dispatch_record(plan, dispatch))?;
+        fs::write(
+            dispatch_path,
+            render_subagent_dispatch_record(plan, dispatch),
+        )?;
         let dispatch_path_str = dispatch_path.display().to_string();
         all_paths.push(dispatch_path_str.clone());
 
         let evidence_archive_path = &evidence_archive_paths[idx];
         fs::write(
             evidence_archive_path,
-            render_subagent_evidence_archive(plan, dispatch, &dispatch_path_str, &runbook_json.display().to_string()),
+            render_subagent_evidence_archive(
+                plan,
+                dispatch,
+                &dispatch_path_str,
+                &runbook_json.display().to_string(),
+            ),
         )?;
         let evidence_archive_path_str = evidence_archive_path.display().to_string();
         all_paths.push(evidence_archive_path_str.clone());
@@ -1909,8 +2167,14 @@ fn persist_subagent_runbook_artifacts(
         );
         let recovery_json_path = &recovery_json_paths[idx];
         let recovery_md_path = &recovery_md_paths[idx];
-        fs::write(recovery_json_path, serde_json::to_vec_pretty(&recovery_record)?)?;
-        fs::write(recovery_md_path, render_subagent_recovery_record(plan, &recovery_record))?;
+        fs::write(
+            recovery_json_path,
+            serde_json::to_vec_pretty(&recovery_record)?,
+        )?;
+        fs::write(
+            recovery_md_path,
+            render_subagent_recovery_record(plan, &recovery_record),
+        )?;
 
         let recovery_json_path_str = recovery_json_path.display().to_string();
         let recovery_md_path_str = recovery_md_path.display().to_string();
@@ -2039,7 +2303,11 @@ fn render_subagent_evidence_archive(
     )
 }
 
-fn replay_command_for(plan: &ExecutionPlan, dispatch: &SubagentDispatch, replay_script_path: &Path) -> String {
+fn replay_command_for(
+    plan: &ExecutionPlan,
+    dispatch: &SubagentDispatch,
+    replay_script_path: &Path,
+) -> String {
     format!(
         "sh {} # replay subagent role '{}' for task {}",
         replay_script_path.display(),
@@ -2067,7 +2335,10 @@ fn render_subagent_replay_script(
     )
 }
 
-fn render_subagent_recovery_record(plan: &ExecutionPlan, record: &SubagentRecoveryRecord) -> String {
+fn render_subagent_recovery_record(
+    plan: &ExecutionPlan,
+    record: &SubagentRecoveryRecord,
+) -> String {
     format!(
         "# Subagent Recovery Record\n\n## Task\n\n- ID: {}\n- Mode: {:?}\n\n## Role\n\n- {}\n- Status: {}\n\n## Summary\n\n{}\n\n## Expected Outputs\n\n{}\n\n## Actual Outputs\n\n{}\n\n## Evidence Paths\n\n{}\n\n## State Transitions\n\n{}\n\n## Failure Summary\n\n{}\n\n## Evidence Archive\n\n{}\n\n## Replay Ready\n\n{}\n\n## Replay Command\n\n{}\n",
         plan.task_id,
@@ -2095,7 +2366,10 @@ fn render_subagent_recovery_record(plan: &ExecutionPlan, record: &SubagentRecove
     )
 }
 
-fn render_subagent_recovery_ledger(plan: &ExecutionPlan, ledger: &SubagentRecoveryLedger) -> String {
+fn render_subagent_recovery_ledger(
+    plan: &ExecutionPlan,
+    ledger: &SubagentRecoveryLedger,
+) -> String {
     let mut out = format!(
         "# Subagent Recovery Ledger\n\n## Task\n\n- ID: {}\n- Mode: {:?}\n\n## Replay Summary\n\n{}\n\n## Records\n\n",
         plan.task_id, plan.mode, ledger.replay_summary
@@ -2178,7 +2452,13 @@ fn render_subagent_dispatch_record(plan: &ExecutionPlan, dispatch: &SubagentDisp
 fn slugify_role(role: &str) -> String {
     let slug = role
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     slug.split('-')
         .filter(|part| !part.is_empty())
@@ -2236,7 +2516,10 @@ fn review_verdict_for(
     review_passed: bool,
     evidence_keys: Vec<String>,
 ) -> Option<ReviewVerdict> {
-    if matches!(plan.mode, ExecutionMode::SubagentDev | ExecutionMode::Verification | ExecutionMode::FinishBranch) {
+    if matches!(
+        plan.mode,
+        ExecutionMode::SubagentDev | ExecutionMode::Verification | ExecutionMode::FinishBranch
+    ) {
         Some(ReviewVerdict {
             approved: review_passed,
             status: if review_passed {
@@ -2263,7 +2546,10 @@ fn verification_verdict_for(
     evidence_keys: Vec<String>,
     deliverables: Vec<String>,
 ) -> Option<VerificationVerdict> {
-    if matches!(plan.mode, ExecutionMode::Verification | ExecutionMode::FinishBranch) {
+    if matches!(
+        plan.mode,
+        ExecutionMode::Verification | ExecutionMode::FinishBranch
+    ) {
         Some(VerificationVerdict {
             passed,
             status: if passed {
@@ -2272,9 +2558,11 @@ fn verification_verdict_for(
                 VerdictStatus::Blocked
             },
             summary: if passed {
-                "Verification gates passed with linked evidence records and may advance.".to_string()
+                "Verification gates passed with linked evidence records and may advance."
+                    .to_string()
             } else {
-                "Verification gates are incomplete or failed, so advancement must remain blocked.".to_string()
+                "Verification gates are incomplete or failed, so advancement must remain blocked."
+                    .to_string()
             },
             evidence: deliverables,
             evidence_keys,
@@ -2300,7 +2588,10 @@ fn collect_evidence_records(
             kind: EvidenceKind::GeneratedArtifact,
             status: EvidenceStatus::Collected,
             required: true,
-            summary: format!("Generated artifact `{}` for task {}.", artifact.path, plan.task_id),
+            summary: format!(
+                "Generated artifact `{}` for task {}.",
+                artifact.path, plan.task_id
+            ),
             path: Some(artifact.path.clone()),
         });
     }
@@ -2363,7 +2654,12 @@ fn collect_evidence_records(
 fn review_evidence_keys(evidence: &[EvidenceRecord]) -> Vec<String> {
     evidence
         .iter()
-        .filter(|item| matches!(item.kind, EvidenceKind::GeneratedArtifact | EvidenceKind::Review | EvidenceKind::Workspace))
+        .filter(|item| {
+            matches!(
+                item.kind,
+                EvidenceKind::GeneratedArtifact | EvidenceKind::Review | EvidenceKind::Workspace
+            )
+        })
         .map(|item| item.key.clone())
         .collect()
 }
@@ -2388,7 +2684,13 @@ fn verification_evidence_keys(evidence: &[EvidenceRecord]) -> Vec<String> {
 fn sanitize_evidence_key(input: &str) -> String {
     input
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|part| !part.is_empty())
@@ -2418,14 +2720,22 @@ fn git_preferred_remote(repo_root: &Path) -> Result<String> {
 
 fn git_toplevel(project_root: &Path) -> Result<PathBuf> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(project_root).arg("rev-parse").arg("--show-toplevel");
+    command
+        .arg("-C")
+        .arg(project_root)
+        .arg("rev-parse")
+        .arg("--show-toplevel");
     let output = run_command(&mut command, "failed to locate git repository root")?;
     Ok(PathBuf::from(output))
 }
 
 fn git_current_branch(project_root: &Path) -> Result<String> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(project_root).arg("branch").arg("--show-current");
+    command
+        .arg("-C")
+        .arg(project_root)
+        .arg("branch")
+        .arg("--show-current");
     run_command(&mut command, "failed to resolve current git branch")
 }
 
@@ -2458,8 +2768,14 @@ fn git_branch_exists(repo_root: &Path, branch_name: &str) -> Result<bool> {
 
 fn git_is_clean(repo_root: &Path) -> Result<bool> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(repo_root).arg("status").arg("--porcelain");
-    Ok(run_command(&mut command, "failed to inspect git status")?.trim().is_empty())
+    command
+        .arg("-C")
+        .arg(repo_root)
+        .arg("status")
+        .arg("--porcelain");
+    Ok(run_command(&mut command, "failed to inspect git status")?
+        .trim()
+        .is_empty())
 }
 
 fn normalize_worktree_path(repo_root: &Path, worktree_path: &str) -> PathBuf {
@@ -2495,8 +2811,12 @@ fn mode_for(kind: TaskKind) -> ExecutionMode {
 
 fn workspace_for(kind: TaskKind) -> WorkspaceStrategy {
     match kind {
-        TaskKind::Brainstorming | TaskKind::SpecCapture | TaskKind::Verification => WorkspaceStrategy::InPlace,
-        TaskKind::Planning | TaskKind::Implementation | TaskKind::FinishBranch => WorkspaceStrategy::GitWorktree,
+        TaskKind::Brainstorming | TaskKind::SpecCapture | TaskKind::Verification => {
+            WorkspaceStrategy::InPlace
+        }
+        TaskKind::Planning | TaskKind::Implementation | TaskKind::FinishBranch => {
+            WorkspaceStrategy::GitWorktree
+        }
     }
 }
 
@@ -2653,7 +2973,10 @@ fn steps_for(_task: &TaskItem, kind: TaskKind) -> Vec<PlanStep> {
 
 fn validation_for(task: &TaskItem, kind: TaskKind) -> Vec<String> {
     let mut checks = vec![
-        format!("Task {} produces written artifacts that a later loop can consume.", task.id),
+        format!(
+            "Task {} produces written artifacts that a later loop can consume.",
+            task.id
+        ),
         "Each output is explicit enough to be inspected by a human reviewer.".to_string(),
     ];
 
@@ -2699,14 +3022,18 @@ fn quality_gates_for(kind: TaskKind) -> Vec<QualityGate> {
             QualityGate {
                 name: "traceability".to_string(),
                 required: true,
-                description: "The requirement packet can be mapped into spec artifacts without guesswork.".to_string(),
+                description:
+                    "The requirement packet can be mapped into spec artifacts without guesswork."
+                        .to_string(),
             },
         ],
         TaskKind::SpecCapture => vec![
             QualityGate {
                 name: "spec_consistency".to_string(),
                 required: true,
-                description: "proposal, requirements, acceptance, design, and tasks agree with each other.".to_string(),
+                description:
+                    "proposal, requirements, acceptance, design, and tasks agree with each other."
+                        .to_string(),
             },
             QualityGate {
                 name: "dag_integrity".to_string(),
@@ -2718,7 +3045,8 @@ fn quality_gates_for(kind: TaskKind) -> Vec<QualityGate> {
             QualityGate {
                 name: "planning_quality".to_string(),
                 required: true,
-                description: "The writing-plans output is actionable, bounded, and checkpointed.".to_string(),
+                description: "The writing-plans output is actionable, bounded, and checkpointed."
+                    .to_string(),
             },
             QualityGate {
                 name: "workspace_readiness".to_string(),
@@ -2730,12 +3058,15 @@ fn quality_gates_for(kind: TaskKind) -> Vec<QualityGate> {
             QualityGate {
                 name: "tests".to_string(),
                 required: true,
-                description: "TDD or at least explicit test execution is required before completion.".to_string(),
+                description:
+                    "TDD or at least explicit test execution is required before completion."
+                        .to_string(),
             },
             QualityGate {
                 name: "review".to_string(),
                 required: true,
-                description: "Implementation must be reviewable and ready for a reviewer brief.".to_string(),
+                description: "Implementation must be reviewable and ready for a reviewer brief."
+                    .to_string(),
             },
         ],
         TaskKind::Verification => vec![
@@ -2747,7 +3078,8 @@ fn quality_gates_for(kind: TaskKind) -> Vec<QualityGate> {
             QualityGate {
                 name: "progress_update".to_string(),
                 required: true,
-                description: "OpenSpec progress files must be updated after the verdict.".to_string(),
+                description: "OpenSpec progress files must be updated after the verdict."
+                    .to_string(),
             },
         ],
         TaskKind::FinishBranch => vec![
@@ -2872,14 +3204,20 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
             role: "analyst".to_string(),
             goal: format!("Clarify the real user intent for task {}.", task.id),
             inputs: vec![task.title.clone(), task.description.clone()],
-            outputs: vec!["clarifications list".to_string(), "acceptance criteria".to_string()],
+            outputs: vec![
+                "clarifications list".to_string(),
+                "acceptance criteria".to_string(),
+            ],
             depends_on: vec![],
         }],
         TaskKind::SpecCapture => vec![SubagentBrief {
             role: "spec-writer".to_string(),
             goal: format!("Write OpenSpec artifacts for task {}.", task.id),
             inputs: vec!["requirement packet".to_string()],
-            outputs: vec!["proposal fragment".to_string(), "requirements and acceptance updates".to_string()],
+            outputs: vec![
+                "proposal fragment".to_string(),
+                "requirements and acceptance updates".to_string(),
+            ],
             depends_on: vec![],
         }],
         TaskKind::Planning => vec![
@@ -2887,7 +3225,10 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
                 role: "planner".to_string(),
                 goal: format!("Create the writing-plans breakdown for task {}.", task.id),
                 inputs: vec!["design.md".to_string(), "tasks.md".to_string()],
-                outputs: vec!["execution slices".to_string(), "checkpoint plan".to_string()],
+                outputs: vec![
+                    "execution slices".to_string(),
+                    "checkpoint plan".to_string(),
+                ],
                 depends_on: vec![],
             },
             SubagentBrief {
@@ -2901,7 +3242,10 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
         TaskKind::Implementation => vec![
             SubagentBrief {
                 role: "developer".to_string(),
-                goal: format!("Implement the planned work for task {} in an isolated workspace.", task.id),
+                goal: format!(
+                    "Implement the planned work for task {} in an isolated workspace.",
+                    task.id
+                ),
                 inputs: vec!["writing plans".to_string(), "workspace plan".to_string()],
                 outputs: vec!["code changes".to_string(), "developer notes".to_string()],
                 depends_on: vec![],
@@ -2916,22 +3260,38 @@ fn subagents_for(task: &TaskItem, kind: TaskKind) -> Vec<SubagentBrief> {
         ],
         TaskKind::Verification => vec![SubagentBrief {
             role: "verifier".to_string(),
-            goal: format!("Decide whether task {} may advance and what should be learned from it.", task.id),
+            goal: format!(
+                "Decide whether task {} may advance and what should be learned from it.",
+                task.id
+            ),
             inputs: vec!["review brief".to_string(), "evidence bundle".to_string()],
-            outputs: vec!["verification verdict".to_string(), "evolution signal".to_string()],
+            outputs: vec![
+                "verification verdict".to_string(),
+                "evolution signal".to_string(),
+            ],
             depends_on: vec!["developer".to_string(), "reviewer".to_string()],
         }],
         TaskKind::FinishBranch => vec![SubagentBrief {
             role: "release-coordinator".to_string(),
             goal: format!("Finish the development branch for task {} safely.", task.id),
-            inputs: vec!["verification report".to_string(), "branch summary".to_string()],
-            outputs: vec!["merge/pr/discard options".to_string(), "cleanup instructions".to_string()],
+            inputs: vec![
+                "verification report".to_string(),
+                "branch summary".to_string(),
+            ],
+            outputs: vec![
+                "merge/pr/discard options".to_string(),
+                "cleanup instructions".to_string(),
+            ],
             depends_on: vec![],
         }],
     }
 }
 
-fn worktree_plan_for(task: &TaskItem, kind: TaskKind, strategy: WorkspaceStrategy) -> Option<WorktreePlan> {
+fn worktree_plan_for(
+    task: &TaskItem,
+    kind: TaskKind,
+    strategy: WorkspaceStrategy,
+) -> Option<WorktreePlan> {
     if matches!(strategy, WorkspaceStrategy::InPlace) {
         return None;
     }
@@ -2976,13 +3336,18 @@ fn follow_ups_for(plan: &ExecutionPlan) -> Vec<String> {
             follow_ups.push("Prepare the worktree before any implementation starts.".to_string());
         }
         ExecutionMode::SubagentDev => {
-            follow_ups.push("Run review and verification before allowing branch finishing.".to_string());
+            follow_ups
+                .push("Run review and verification before allowing branch finishing.".to_string());
         }
         ExecutionMode::Verification => {
-            follow_ups.push("Update progress.txt and evolve candidates using this verdict.".to_string());
+            follow_ups
+                .push("Update progress.txt and evolve candidates using this verdict.".to_string());
         }
         ExecutionMode::FinishBranch => {
-            follow_ups.push("Choose merge, PR, or discard and then clean temporary workspace artifacts.".to_string());
+            follow_ups.push(
+                "Choose merge, PR, or discard and then clean temporary workspace artifacts."
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -3397,21 +3762,15 @@ fn render_workspace_contract(plan: &ExecutionPlan) -> String {
     match (&plan.worktree_plan, &plan.workspace_record) {
         (Some(worktree), Some(record)) => format!(
             "- Planned branch: {}\n- Planned path: {}\n- Current status: {:?}\n- Cleanup hint: {}",
-            worktree.branch_name,
-            worktree.worktree_path,
-            record.status,
-            worktree.cleanup_hint
+            worktree.branch_name, worktree.worktree_path, record.status, worktree.cleanup_hint
         ),
         (Some(worktree), None) => format!(
             "- Planned branch: {}\n- Planned path: {}\n- Cleanup hint: {}",
-            worktree.branch_name,
-            worktree.worktree_path,
-            worktree.cleanup_hint
+            worktree.branch_name, worktree.worktree_path, worktree.cleanup_hint
         ),
         (None, Some(record)) => format!(
             "- Execute in place at {}\n- Current status: {:?}",
-            record.worktree_path,
-            record.status
+            record.worktree_path, record.status
         ),
         (None, None) => "- Execute in place under the current project root.".to_string(),
     }
@@ -3434,7 +3793,12 @@ fn render_step_sections(steps: &[PlanStep]) -> String {
 fn render_quality_gates(gates: &[QualityGate]) -> String {
     gates
         .iter()
-        .map(|gate| format!("- **{}**: {} (required: {})", gate.name, gate.description, gate.required))
+        .map(|gate| {
+            format!(
+                "- **{}**: {} (required: {})",
+                gate.name, gate.description, gate.required
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -3499,31 +3863,31 @@ pub async fn execute_plan_with_bridge(
 
     // Dispatch the task to an agent
     info!("Dispatching task {} to agent", task.id);
-    let agent_task_id = client.dispatch_task(task, &plan.task_id, plan, context_files)
+    let agent_task_id = client
+        .dispatch_task(task, &plan.task_id, plan, context_files)
         .await
         .context("failed to dispatch task to agent")?;
 
     info!("Task {} dispatched to agent as {}", task.id, agent_task_id);
 
     // Wait for task completion
-    info!("Waiting for task {} to complete (timeout: {}s)", task.id, timeout_secs);
-    let task_result = client.wait_for_task(&task.id, &agent_task_id, timeout_secs)
+    info!(
+        "Waiting for task {} to complete (timeout: {}s)",
+        task.id, timeout_secs
+    );
+    let task_result = client
+        .wait_for_task(&task.id, &agent_task_id, timeout_secs)
         .await
         .context("failed to wait for task completion")?;
 
     // Collect evidence
-    let evidence_records = client.collect_evidence(&task.id, &agent_task_id)
+    let evidence_records = client
+        .collect_evidence(&task.id, &agent_task_id)
         .await
         .context("failed to collect evidence")?;
 
     // Build the execution report from the agent's results
-    build_report_from_agent_result(
-        project_root,
-        task,
-        plan,
-        task_result,
-        evidence_records,
-    )
+    build_report_from_agent_result(project_root, task, plan, task_result, evidence_records)
 }
 
 /// Execute a plan via the gRPC bridge (sync wrapper around async bridge client).
@@ -3564,7 +3928,7 @@ fn build_report_from_agent_result(
     task_result: bridge_client::TaskResult,
     evidence_records: Vec<proto::EvidenceRecord>,
 ) -> Result<ExecutionReport> {
-    use bridge_client::{task_state_is_success, task_state_is_failure};
+    use bridge_client::{task_state_is_failure, task_state_is_success};
 
     let success = task_state_is_success(task_result.state);
     let outcome = if success {
@@ -3591,7 +3955,11 @@ fn build_report_from_agent_result(
                 },
                 required: true,
                 summary: format!("Evidence {}: {}", e.id, e.kind),
-                path: if e.file_path.is_empty() { None } else { Some(e.file_path.clone()) },
+                path: if e.file_path.is_empty() {
+                    None
+                } else {
+                    Some(e.file_path.clone())
+                },
             }
         })
         .collect();
@@ -3603,7 +3971,7 @@ fn build_report_from_agent_result(
             .iter()
             .filter(|e| !e.file_path.is_empty())
             .map(|e| e.file_path.clone())
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     );
 
     // Build details from task result summary
@@ -3693,10 +4061,8 @@ mod tests {
     }
 
     fn test_project_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "zero_nine_exec_test_{}",
-            Uuid::new_v4().simple()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("zero_nine_exec_test_{}", Uuid::new_v4().simple()));
         fs::create_dir_all(&root).unwrap();
         Command::new("git")
             .arg("init")
@@ -3718,7 +4084,10 @@ mod tests {
         assert_eq!(classify_task(&task), TaskKind::Planning);
         assert!(plan.worktree_plan.is_some());
         assert!(plan.subagents.len() >= 2);
-        assert!(plan.deliverables.iter().any(|item| item.contains("workspace-plan")));
+        assert!(plan
+            .deliverables
+            .iter()
+            .any(|item| item.contains("workspace-plan")));
     }
 
     #[test]
@@ -3732,10 +4101,22 @@ mod tests {
         let project_root = test_project_root();
         let report = execute_plan(project_root.as_path(), &task, &plan, None, false).unwrap();
         assert!(report.success);
-        assert!(report.generated_artifacts.iter().any(|item| item.path.contains("review-brief")));
-        assert!(report.generated_artifacts.iter().any(|item| item.path.contains("tdd-cycle")));
-        assert!(report.generated_artifacts.iter().any(|item| item.path.contains("subagent-dev-runbook")));
-        assert!(report.generated_artifacts.iter().any(|item| item.path.contains("review-checklist")));
+        assert!(report
+            .generated_artifacts
+            .iter()
+            .any(|item| item.path.contains("review-brief")));
+        assert!(report
+            .generated_artifacts
+            .iter()
+            .any(|item| item.path.contains("tdd-cycle")));
+        assert!(report
+            .generated_artifacts
+            .iter()
+            .any(|item| item.path.contains("subagent-dev-runbook")));
+        assert!(report
+            .generated_artifacts
+            .iter()
+            .any(|item| item.path.contains("review-checklist")));
     }
 
     #[test]
@@ -3771,7 +4152,14 @@ mod tests {
         );
         let finish_plan = build_plan(&finish_task);
         let finish_root = test_project_root();
-        let finish_report = execute_plan(finish_root.as_path(), &finish_task, &finish_plan, None, false).unwrap();
+        let finish_report = execute_plan(
+            finish_root.as_path(),
+            &finish_task,
+            &finish_plan,
+            None,
+            false,
+        )
+        .unwrap();
         assert!(finish_report
             .generated_artifacts
             .iter()
@@ -3889,14 +4277,12 @@ mod tests {
         };
 
         let plan = build_plan_with_config(&task, SubagentExecutionPath::Bridge, None);
-        let result = execute_plan_via_bridge(
-            std::path::Path::new("/tmp"),
-            &task,
-            &plan,
-            300,
-        );
+        let result = execute_plan_via_bridge(std::path::Path::new("/tmp"), &task, &plan, 300);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("bridge_address required"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("bridge_address required"));
     }
 
     #[test]
@@ -3913,15 +4299,17 @@ mod tests {
             preconditions: vec![],
         };
 
-        let plan = build_plan_with_config(&task, SubagentExecutionPath::Bridge, Some("invalid".to_string()));
-        let result = execute_plan_via_bridge(
-            std::path::Path::new("/tmp"),
+        let plan = build_plan_with_config(
             &task,
-            &plan,
-            300,
+            SubagentExecutionPath::Bridge,
+            Some("invalid".to_string()),
         );
+        let result = execute_plan_via_bridge(std::path::Path::new("/tmp"), &task, &plan, 300);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid bridge_address format"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid bridge_address format"));
     }
 
     #[test]
