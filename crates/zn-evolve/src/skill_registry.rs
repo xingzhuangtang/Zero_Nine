@@ -5,9 +5,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 
 use zn_types::SkillVersion;
 
@@ -230,7 +229,7 @@ impl SkillRegistry {
         let mut total_versions = 0;
         let mut active_count = 0;
 
-        for (name, records) in &self.data.versions {
+        for (_name, records) in &self.data.versions {
             total_skills += 1;
             total_versions += records.len();
             if records.iter().any(|r| r.active) {
