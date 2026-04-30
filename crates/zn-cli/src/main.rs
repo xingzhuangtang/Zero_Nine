@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use rustyline::DefaultEditor;
@@ -153,6 +153,33 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         scenario: String,
+    },
+    /// Evolution engine — inspect reward/curriculum/belief coordination
+    Evolve {
+        #[command(subcommand)]
+        command: EvolveCommands,
+    },
+}
+
+/// Evolution engine commands
+#[derive(Subcommand, Debug)]
+enum EvolveCommands {
+    /// Show integrated decision state
+    Decision {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Show engine snapshot
+    Snapshot {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Reset evolution state
+    Reset {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -1707,6 +1734,184 @@ fn main() -> Result<()> {
             }
 
             println!("Total patterns processed: {}", total_distilled);
+        }
+        Commands::Evolve {
+            command: evolve_command,
+        } => {
+            let project_root = match &evolve_command {
+                EvolveCommands::Decision { project }
+                | EvolveCommands::Snapshot { project }
+                | EvolveCommands::Reset { project, .. } => project,
+            };
+            let project_root = project_root
+                .canonicalize()
+                .with_context(|| format!("project root not found: {}", project_root.display()))?;
+
+            match evolve_command {
+                EvolveCommands::Decision { .. } => {
+                    let engine =
+                        zn_evolve::integration_engine::IntegrationEngine::new(&project_root)
+                            .context("Failed to initialize IntegrationEngine")?;
+
+                    // Seed the evolve directory if it doesn't exist
+                    let evolve_dir = project_root.join(".zero_nine/evolve");
+                    if !evolve_dir.exists() {
+                        std::fs::create_dir_all(&evolve_dir)?;
+                    }
+
+                    let decision = engine.get_integrated_decision();
+                    println!("# Integration Engine — Integrated Decision\n");
+                    println!(
+                        "**Continue Execution**: {}",
+                        if decision.should_continue {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "**Change Hypothesis**: {}",
+                        if decision.should_change_hypothesis {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "**Escalate**: {}",
+                        if decision.should_escalate {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "**Recommended Difficulty**: {:.2}",
+                        decision.recommended_difficulty
+                    );
+                    if let Some(ref task_id) = decision.recommended_task_id {
+                        println!("**Recommended Task**: {}", task_id);
+                    }
+                    println!("**Recommended Action**: {:?}", decision.recommended_action);
+                    println!("**Confidence**: {:.2}", decision.confidence);
+                    println!("**Evidence Balance**: {:.2}", decision.evidence_balance);
+                    println!("**Reward Score**: {:.2}", decision.reward_score);
+                    println!("\n## Reasoning\n");
+                    println!("- **Belief**: {}", decision.reasoning.belief_reasoning);
+                    println!(
+                        "- **Curriculum**: {}",
+                        decision.reasoning.curriculum_reasoning
+                    );
+                    println!("- **Reward**: {}", decision.reasoning.reward_reasoning);
+                    if !decision.reasoning.conflicts.is_empty() {
+                        println!("\n## Conflicts\n");
+                        for conflict in &decision.reasoning.conflicts {
+                            println!("- {}", conflict);
+                        }
+                    }
+                }
+                EvolveCommands::Snapshot { .. } => {
+                    let engine =
+                        zn_evolve::integration_engine::IntegrationEngine::new(&project_root)
+                            .context("Failed to initialize IntegrationEngine")?;
+
+                    let snapshot = engine
+                        .get_snapshot()
+                        .context("Failed to get engine snapshot")?;
+                    println!("# Integration Engine — State Snapshot\n");
+                    println!("## Reward Breakdown");
+                    println!(
+                        "- **Weighted Score**: {:.2}",
+                        snapshot.reward_breakdown.weighted_score
+                    );
+                    println!(
+                        "- **Code Quality**: {:.2}",
+                        snapshot.reward_breakdown.code_quality
+                    );
+                    println!(
+                        "- **Test Coverage**: {:.2}",
+                        snapshot.reward_breakdown.test_coverage
+                    );
+                    println!(
+                        "- **Comparisons Recorded**: {}",
+                        snapshot.reward_breakdown.comparison_count
+                    );
+                    println!("\n## Curriculum Stats");
+                    println!(
+                        "- **Total Tasks**: {}",
+                        snapshot.curriculum_stats.total_tasks
+                    );
+                    println!(
+                        "- **Avg Mastery**: {:.2}",
+                        snapshot.curriculum_stats.avg_mastery
+                    );
+                    println!(
+                        "- **Current Difficulty**: {:.2}",
+                        snapshot.curriculum_stats.current_difficulty
+                    );
+                    if let Some(ref belief) = snapshot.belief_summary {
+                        println!("\n## Belief State");
+                        println!("- **Confidence**: {:.2}", belief.confidence);
+                        println!("- **Confident**: {}", belief.is_confident);
+                        println!("- **Confused**: {}", belief.is_confused);
+                        println!(
+                            "- **Evidence**: {} for, {} against",
+                            belief.evidence_for_count, belief.evidence_against_count
+                        );
+                    }
+                    println!("\n## Integrated Decision");
+                    println!(
+                        "- **Continue**: {}",
+                        if snapshot.integrated_decision.should_continue {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "- **Change Hypothesis**: {}",
+                        if snapshot.integrated_decision.should_change_hypothesis {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "- **Escalate**: {}",
+                        if snapshot.integrated_decision.should_escalate {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    );
+                    println!(
+                        "- **Action**: {:?}",
+                        snapshot.integrated_decision.recommended_action
+                    );
+                }
+                EvolveCommands::Reset { confirm, .. } => {
+                    if !confirm {
+                        println!(
+                            "Use --confirm to reset the IntegrationEngine state for this project."
+                        );
+                        return Ok(());
+                    }
+                    let mut engine =
+                        zn_evolve::integration_engine::IntegrationEngine::new(&project_root)
+                            .context("Failed to initialize IntegrationEngine")?;
+
+                    engine
+                        .reset(&project_root)
+                        .context("Failed to reset IntegrationEngine")?;
+                    println!(
+                        "IntegrationEngine reset complete for project at {}",
+                        project_root.display()
+                    );
+                    println!(
+                        "All reward, curriculum, and belief state files have been reinitialized."
+                    );
+                }
+            }
         }
     }
     Ok(())
