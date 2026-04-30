@@ -127,12 +127,13 @@ Zero_Nine 有两个不同的"架构层"概念：
 | --- | --- |
 | `zn-types` | 定义统一数据模型，包括 proposal、task、loop state、execution report、evolution candidate、belief state、reward model 等 |
 | `zn-spec` | 管理 `.zero_nine/` 工件目录、proposal、tasks、progress 与 runtime events |
-| `zn-exec` | 提供任务分类、执行计划生成与统一执行报告结构（含安全命令执行、Token 优化、预算控制） |
-| `zn-loop` | 实现 Zero_Nine 的循环驱动、状态推进、事件写入与结果汇总 |
-| `zn-evolve` | 负责执行结果评分、演化候选生成、技能蒸馏，以及完整的进化引擎（信念追踪、奖励学习、课程学习、三系统融合决策） |
+| `zn-exec` | 提供任务分类、执行计划生成与统一执行报告结构（含安全命令执行、Token 优化、预算控制、可观测性） |
+| `zn-loop` | 实现 Zero_Nine 的循环驱动、状态推进、事件写入与结果汇总（已集成 IntegrationEngine 决策门控） |
+| `zn-evolve` | 负责执行结果评分、演化候选生成、技能蒸馏，以及完整的进化引擎（信念追踪、奖励学习、课程学习、三系统融合决策、技能版本注册） |
 | `zn-host` | 输出 Claude/OpenCode 适配文件并处理宿主识别 |
-| `zn-cli` | 提供 `init`、`run`、`status`、`resume`、`export` 命令 |
+| `zn-cli` | 提供 `init`、`run`、`resume`、`status`、`export`、`brainstorm`、`dashboard`、`distill`、`evolve`、`skills` 等完整命令 |
 | `zn-bridge` | gRPC 桥接层，支持子代理通信和 MCP 集成 |
+| `zn-sdk` | 统一 SDK 门面，封装核心 API 供外部程序调用 |
 
 ### 安全特性（v1.0.2）
 
@@ -287,11 +288,24 @@ zero-nine init --project /path/to/project --host claude-code
 |------|------|------|
 | `init` | 初始化 `.zero_nine/` 工作目录 | `zero-nine init --project . --host claude-code` |
 | `run` | 一句话目标启动完整流程 | `zero-nine run --goal "添加登录功能"` |
+| `run --dry-run` | 预览执行计划，不实际执行 | `zero-nine run --dry-run --goal "添加登录功能"` |
 | `brainstorm` | 独立头脑风暴模式 | `zero-nine brainstorm --goal "添加积分系统"` |
 | `status` | 查看当前状态 | `zero-nine status --project .` |
 | `resume` | 从中断处继续执行 | `zero-nine resume --host claude-code` |
+| `resume --dry-run` | 预览恢复计划，不实际执行 | `zero-nine resume --dry-run` |
+| `distill` | 蒸馏执行报告中的技能模式 | `zero-nine distill --project .` |
 | `export` | 导出宿主适配文件 | `zero-nine export --project .` |
 | `dashboard` | TUI 仪表盘 | `zero-nine dashboard --project .` |
+| `evolve decision` | 查看集成决策（继续/改变假设/升级） | `zero-nine evolve decision --project .` |
+| `evolve snapshot` | 查看引擎全量快照 | `zero-nine evolve snapshot --project .` |
+| `evolve reset` | 重置进化引擎状态 | `zero-nine evolve reset --project . --confirm` |
+| `skills list` | 列出所有可用技能 | `zero-nine skills list --project .` |
+| `skills search` | 按标签/关键词搜索技能 | `zero-nine skills search --project . "rust"` |
+| `skills create` | 创建新技能模板 | `zero-nine skills create --project . my-skill --category dev` |
+| `skills view` | 查看技能内容 | `zero-nine skills view --project . my-skill` |
+| `skills validate` | 验证技能文件格式 | `zero-nine skills validate --project . my-skill` |
+| `skills versions` | 查看技能版本历史与对比 | `zero-nine skills versions --project . my-skill` |
+| `skills delete` | 删除技能 | `zero-nine skills delete --project . my-skill --force` |
 
 ### 完整使用示例
 
@@ -790,11 +804,11 @@ echo $COLUMNS $LINES
 
 ## 下一阶段建议
 
-如果你要把 Zero_Nine 继续推进到真正可投入日常使用的版本，下一步最值得优先做的是三件事：
+Phase 1-4 均已完成。下一步最值得优先做的是三件事：
 
 1. **扩展执行桥** - 把当前 `zn-exec` 从"骨架执行器"扩展成真正可调用宿主代理与外部工具的执行桥
-2. **进化引擎生产化** - 把进化引擎的决策信号接入实际的执行循环，实现自动重试/降级/升级
-3. **技能版本系统** - 把 OpenSpace 式的演化逻辑从本地候选文件提升到可比较、可回滚、可选注入的技能版本系统
+2. **技能版本系统生产化** - 增加版本历史归档、批量操作、以及 distiller 自动注册版本
+3. **TUI 仪表盘增强** — 集成 IntegrationEngine 决策信号和技能状态展示
 
 ---
 
@@ -810,5 +824,5 @@ echo $COLUMNS $LINES
 
 ---
 
-**最后更新**: 2026-04-19  
-**版本**: v1.0.2 (安全修复 + 进化引擎完整版)
+**最后更新**: 2026-05-01  
+**版本**: v2.0.0 (Phase 1-4 完整版 — 平台化与技能版本系统)
