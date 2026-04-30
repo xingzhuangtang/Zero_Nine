@@ -82,8 +82,10 @@ impl RewardModel {
 
         self.reward.code_quality = self.smooth_update(self.reward.code_quality, code_quality);
         self.reward.test_coverage = self.smooth_update(self.reward.test_coverage, test_coverage);
-        self.reward.execution_speed = self.smooth_update(self.reward.execution_speed, execution_speed);
-        self.reward.token_efficiency = self.smooth_update(self.reward.token_efficiency, token_efficiency);
+        self.reward.execution_speed =
+            self.smooth_update(self.reward.execution_speed, execution_speed);
+        self.reward.token_efficiency =
+            self.smooth_update(self.reward.token_efficiency, token_efficiency);
 
         if let Some(sat) = user_satisfaction {
             self.reward.user_satisfaction = self.smooth_update(self.reward.user_satisfaction, sat);
@@ -156,7 +158,9 @@ impl RewardModel {
 
     /// Update weights manually
     pub fn set_weight(&mut self, dimension: &str, weight: f32) {
-        self.reward.learned_weights.insert(dimension.to_string(), weight);
+        self.reward
+            .learned_weights
+            .insert(dimension.to_string(), weight);
     }
 
     /// Get reward breakdown
@@ -236,8 +240,7 @@ pub struct RewardState {
 
 /// Create default reward model in .zero_nine/evolve directory
 pub fn create_default_reward_model(project_root: &Path) -> Result<RewardModel> {
-    let comparisons_file = project_root
-        .join(".zero_nine/evolve/pairwise_comparisons.ndjson");
+    let comparisons_file = project_root.join(".zero_nine/evolve/pairwise_comparisons.ndjson");
     RewardModel::new(comparisons_file)
 }
 

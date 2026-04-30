@@ -32,7 +32,7 @@ pub struct SkillScoreSummary {
 /// Skill improvement suggestion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillImprovement {
-    pub priority: u8,  // 1-5, 1 is highest
+    pub priority: u8, // 1-5, 1 is highest
     pub category: String,
     pub suggestion: String,
     pub expected_impact: String,
@@ -61,8 +61,12 @@ impl SkillScorer {
             return Ok(());
         }
 
-        let file = fs::File::open(&self.evaluations_file)
-            .with_context(|| format!("Failed to open evaluations file: {}", self.evaluations_file.display()))?;
+        let file = fs::File::open(&self.evaluations_file).with_context(|| {
+            format!(
+                "Failed to open evaluations file: {}",
+                self.evaluations_file.display()
+            )
+        })?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
@@ -89,11 +93,18 @@ impl SkillScorer {
     }
 
     /// Record a new skill execution
-    pub fn record_execution(&mut self, skill_name: &str, success: bool, latency_ms: u64, token_cost: u64, notes: &str) {
+    pub fn record_execution(
+        &mut self,
+        skill_name: &str,
+        success: bool,
+        latency_ms: u64,
+        token_cost: u64,
+        notes: &str,
+    ) {
         let score = if success {
-            0.8 + (latency_ms.max(100) as f32 / 10000.0).min(0.17)  // 0.8-0.97 for success
+            0.8 + (latency_ms.max(100) as f32 / 10000.0).min(0.17) // 0.8-0.97 for success
         } else {
-            0.3 + (latency_ms.max(100) as f32 / 10000.0).min(0.3)  // 0.3-0.6 for failure
+            0.3 + (latency_ms.max(100) as f32 / 10000.0).min(0.3) // 0.3-0.6 for failure
         };
 
         let evaluation = SkillEvaluation {
@@ -158,7 +169,8 @@ impl SkillScorer {
             } else {
                 let avg_score = evals.iter().map(|e| e.score).sum::<f32>() / evals.len() as f32;
                 let success_count = evals.iter().filter(|e| e.score >= 0.7).count();
-                let avg_latency = evals.iter().map(|e| e.latency_ms).sum::<u64>() / evals.len() as u64;
+                let avg_latency =
+                    evals.iter().map(|e| e.latency_ms).sum::<u64>() / evals.len() as u64;
                 let last_updated = Utc::now();
 
                 Some(SkillScoreSummary {
@@ -196,7 +208,8 @@ impl SkillScorer {
 
         let avg_score = evals.iter().map(|e| e.score).sum::<f32>() / evals.len() as f32;
         let recent_evals = evals.iter().rev().take(5).collect::<Vec<_>>();
-        let recent_avg = recent_evals.iter().map(|e| e.score).sum::<f32>() / recent_evals.len() as f32;
+        let recent_avg =
+            recent_evals.iter().map(|e| e.score).sum::<f32>() / recent_evals.len() as f32;
 
         // Check for declining performance
         if recent_avg < avg_score - 0.1 {
@@ -209,7 +222,8 @@ impl SkillScorer {
         }
 
         // Check for low success rate
-        let success_rate = evals.iter().filter(|e| e.score >= 0.7).count() as f32 / evals.len() as f32;
+        let success_rate =
+            evals.iter().filter(|e| e.score >= 0.7).count() as f32 / evals.len() as f32;
         if success_rate < 0.6 {
             suggestions.push(SkillImprovement {
                 priority: 1,
@@ -244,12 +258,20 @@ impl SkillScorer {
         // Analyze failure patterns
         let failures: Vec<_> = evals.iter().filter(|e| e.score < 0.6).collect();
         if failures.len() >= 2 {
-            let common_terms = find_common_terms(&failures.iter().map(|e| e.notes.as_str()).collect::<Vec<_>>());
+            let common_terms = find_common_terms(
+                &failures
+                    .iter()
+                    .map(|e| e.notes.as_str())
+                    .collect::<Vec<_>>(),
+            );
             if !common_terms.is_empty() {
                 suggestions.push(SkillImprovement {
                     priority: 2,
                     category: "Recurring Failure Pattern".to_string(),
-                    suggestion: format!("Common failure pattern detected: {}. Add specific handling for this case.", common_terms.join(", ")),
+                    suggestion: format!(
+                        "Common failure pattern detected: {}. Add specific handling for this case.",
+                        common_terms.join(", ")
+                    ),
                     expected_impact: "Eliminate recurring failure mode".to_string(),
                 });
             }
@@ -294,12 +316,7 @@ impl SkillScorer {
     pub fn get_recent_evaluations(&self, skill_name: &str, count: usize) -> Vec<&SkillEvaluation> {
         self.evaluations
             .get(skill_name)
-            .map(|evals| {
-                evals.iter()
-                    .rev()
-                    .take(count)
-                    .collect()
-            })
+            .map(|evals| evals.iter().rev().take(count).collect())
             .unwrap_or_default()
     }
 }
@@ -325,7 +342,8 @@ fn find_common_terms(notes: &[&str]) -> Vec<String> {
             .collect();
 
         for word in words {
-            *word_counts.entry(word.to_lowercase().to_string())
+            *word_counts
+                .entry(word.to_lowercase().to_string())
                 .or_insert(0) += 1;
         }
     }
@@ -338,8 +356,8 @@ fn find_common_terms(notes: &[&str]) -> Vec<String> {
         .map(|(word, _)| word)
         .collect();
 
-    common.sort_by(|a, b| b.len().cmp(&a.len()));  // Longer terms first
-    common.truncate(3);  // Top 3 terms
+    common.sort_by(|a, b| b.len().cmp(&a.len())); // Longer terms first
+    common.truncate(3); // Top 3 terms
     common
 }
 

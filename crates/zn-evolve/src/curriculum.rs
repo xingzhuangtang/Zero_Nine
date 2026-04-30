@@ -78,18 +78,23 @@ impl CurriculumManager {
     /// Record task completion
     pub fn record_task_completion(&mut self, difficulty: &TaskDifficulty) {
         // Update task difficulty estimate
-        let current = self.curriculum.task_difficulty
+        let current = self
+            .curriculum
+            .task_difficulty
             .get(&difficulty.task_id)
             .copied()
             .unwrap_or(difficulty.estimated_difficulty);
 
         // Exponential moving average
         let new_estimate = current * 0.7 + difficulty.actual_difficulty * 0.3;
-        self.curriculum.task_difficulty
+        self.curriculum
+            .task_difficulty
             .insert(difficulty.task_id.clone(), new_estimate);
 
         // Update mastery level
-        let mastery = self.curriculum.mastery_level
+        let mastery = self
+            .curriculum
+            .mastery_level
             .entry(difficulty.task_id.clone())
             .or_insert(0.5);
 
@@ -115,25 +120,32 @@ impl CurriculumManager {
             return;
         }
 
-        let recent_avg: f32 = self.curriculum.success_history
+        let recent_avg: f32 = self
+            .curriculum
+            .success_history
             .iter()
             .rev()
             .take(5)
-            .sum::<f32>() / 5.0;
+            .sum::<f32>()
+            / 5.0;
 
         // Adjust current difficulty level
         if recent_avg > 0.8 {
             // Too easy, increase difficulty
-            self.curriculum.current_difficulty = (self.curriculum.current_difficulty + 0.1).min(0.9);
+            self.curriculum.current_difficulty =
+                (self.curriculum.current_difficulty + 0.1).min(0.9);
         } else if recent_avg < 0.4 {
             // Too hard, decrease difficulty
-            self.curriculum.current_difficulty = (self.curriculum.current_difficulty - 0.1).max(0.1);
+            self.curriculum.current_difficulty =
+                (self.curriculum.current_difficulty - 0.1).max(0.1);
         }
     }
 
     /// Advanced difficulty adaptation using ELO-style rating
     pub fn adapt_difficulty_elo(&mut self, task_id: &str, success: bool, actual_difficulty: f32) {
-        let current_rating = self.curriculum.task_difficulty
+        let current_rating = self
+            .curriculum
+            .task_difficulty
             .get(task_id)
             .copied()
             .unwrap_or(0.5);
@@ -146,7 +158,8 @@ impl CurriculumManager {
         };
 
         // Expected success based on current rating
-        let expected_success = 1.0 / (1.0 + (10.0_f32).powf((current_rating - self.curriculum.current_difficulty) / 0.4));
+        let expected_success = 1.0
+            / (1.0 + (10.0_f32).powf((current_rating - self.curriculum.current_difficulty) / 0.4));
 
         // Actual outcome
         let actual_outcome = if success { 1.0 } else { 0.0 };
@@ -154,16 +167,21 @@ impl CurriculumManager {
         // Update rating using ELO formula
         let new_rating = current_rating + k_factor * (actual_outcome - expected_success);
 
-        self.curriculum.task_difficulty.insert(task_id.to_string(), new_rating.clamp(0.1, 0.9));
+        self.curriculum
+            .task_difficulty
+            .insert(task_id.to_string(), new_rating.clamp(0.1, 0.9));
 
         // Also update global difficulty
         let adjustment = k_factor * (actual_outcome - expected_success) * 0.5;
-        self.curriculum.current_difficulty = (self.curriculum.current_difficulty + adjustment).clamp(0.1, 0.9);
+        self.curriculum.current_difficulty =
+            (self.curriculum.current_difficulty + adjustment).clamp(0.1, 0.9);
     }
 
     /// Get task difficulty with uncertainty estimate
     pub fn get_task_difficulty_with_uncertainty(&self, task_id: &str) -> (f32, f32) {
-        let difficulty = self.curriculum.task_difficulty
+        let difficulty = self
+            .curriculum
+            .task_difficulty
             .get(task_id)
             .copied()
             .unwrap_or(0.5);
@@ -180,14 +198,17 @@ impl CurriculumManager {
         let current_mastery = if self.curriculum.mastery_level.is_empty() {
             0.5
         } else {
-            self.curriculum.mastery_level.values().sum::<f32>() / self.curriculum.mastery_level.len() as f32
+            self.curriculum.mastery_level.values().sum::<f32>()
+                / self.curriculum.mastery_level.len() as f32
         };
 
         // Zone of proximal development: slightly above current ability
         let optimal_difficulty = current_mastery + 0.1;
 
         // Find tasks in the optimal zone
-        let mut candidates: Vec<_> = self.curriculum.task_difficulty
+        let mut candidates: Vec<_> = self
+            .curriculum
+            .task_difficulty
             .iter()
             .filter(|(_, &diff)| (diff - optimal_difficulty).abs() < 0.15)
             .collect();
@@ -228,13 +249,17 @@ impl CurriculumManager {
         let mut nodes = Vec::new();
 
         for (skill_id, &mastery) in &self.curriculum.mastery_level {
-            let prereqs = self.curriculum.skill_prerequisites
+            let prereqs = self
+                .curriculum
+                .skill_prerequisites
                 .get(skill_id)
                 .cloned()
                 .unwrap_or_default();
 
             // Find dependents (skills that depend on this one)
-            let dependents: Vec<_> = self.curriculum.skill_prerequisites
+            let dependents: Vec<_> = self
+                .curriculum
+                .skill_prerequisites
                 .iter()
                 .filter(|(_, reqs)| reqs.contains(skill_id))
                 .map(|(id, _)| id.clone())
@@ -248,7 +273,11 @@ impl CurriculumManager {
             });
         }
 
-        nodes.sort_by(|a, b| b.mastery.partial_cmp(&a.mastery).unwrap_or(std::cmp::Ordering::Equal));
+        nodes.sort_by(|a, b| {
+            b.mastery
+                .partial_cmp(&a.mastery)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         nodes
     }
 
@@ -265,7 +294,14 @@ impl CurriculumManager {
             return 0.5;
         }
 
-        let recent: Vec<f32> = self.curriculum.success_history.iter().rev().take(10).copied().collect();
+        let recent: Vec<f32> = self
+            .curriculum
+            .success_history
+            .iter()
+            .rev()
+            .take(10)
+            .copied()
+            .collect();
         recent.iter().sum::<f32>() / recent.len() as f32
     }
 
@@ -282,7 +318,9 @@ impl CurriculumManager {
             },
             current_difficulty: self.curriculum.current_difficulty,
             recent_success_rate: self.get_recent_success_rate(),
-            prerequisite_count: self.curriculum.skill_prerequisites
+            prerequisite_count: self
+                .curriculum
+                .skill_prerequisites
                 .values()
                 .map(|v| v.len())
                 .sum::<usize>() as u32,
@@ -348,8 +386,7 @@ pub struct OptimalTaskRecommendation {
 
 /// Create default curriculum manager in .zero_nine/evolve directory
 pub fn create_default_curriculum_manager(project_root: &Path) -> Result<CurriculumManager> {
-    let history_file = project_root
-        .join(".zero_nine/evolve/curriculum_history.ndjson");
+    let history_file = project_root.join(".zero_nine/evolve/curriculum_history.ndjson");
     CurriculumManager::new(history_file)
 }
 

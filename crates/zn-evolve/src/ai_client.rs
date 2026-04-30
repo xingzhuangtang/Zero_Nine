@@ -26,39 +26,48 @@ use std::path::PathBuf;
 #[serde(tag = "provider")]
 pub enum AIProvider {
     /// 阿里云 Coding Plan (默认)
-    AlibabaCodingPlan { api_key: String, model: String, base_url: String },
+    AlibabaCodingPlan {
+        api_key: String,
+        model: String,
+        base_url: String,
+    },
     /// Anthropic Claude API
     Anthropic { api_key: String, model: String },
     /// OpenAI API (future support)
     OpenAI { api_key: String, model: String },
     /// Custom endpoint
-    Custom { endpoint: String, api_key: Option<String> },
+    Custom {
+        endpoint: String,
+        api_key: Option<String>,
+    },
 }
 
 impl std::fmt::Debug for AIProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AIProvider::AlibabaCodingPlan { model, base_url, .. } =>
-                f.debug_struct("AlibabaCodingPlan")
-                    .field("model", model)
-                    .field("base_url", base_url)
-                    .field("api_key", &"[REDACTED]")
-                    .finish(),
-            AIProvider::Anthropic { model, .. } =>
-                f.debug_struct("Anthropic")
-                    .field("model", model)
-                    .field("api_key", &"[REDACTED]")
-                    .finish(),
-            AIProvider::OpenAI { model, .. } =>
-                f.debug_struct("OpenAI")
-                    .field("model", model)
-                    .field("api_key", &"[REDACTED]")
-                    .finish(),
-            AIProvider::Custom { endpoint, .. } =>
-                f.debug_struct("Custom")
-                    .field("endpoint", endpoint)
-                    .field("api_key", &"[REDACTED]")
-                    .finish(),
+            AIProvider::AlibabaCodingPlan {
+                model, base_url, ..
+            } => f
+                .debug_struct("AlibabaCodingPlan")
+                .field("model", model)
+                .field("base_url", base_url)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            AIProvider::Anthropic { model, .. } => f
+                .debug_struct("Anthropic")
+                .field("model", model)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            AIProvider::OpenAI { model, .. } => f
+                .debug_struct("OpenAI")
+                .field("model", model)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            AIProvider::Custom { endpoint, .. } => f
+                .debug_struct("Custom")
+                .field("endpoint", endpoint)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
         }
     }
 }
@@ -80,7 +89,11 @@ impl Default for AIProvider {
             .unwrap_or_else(|_| "qwen3.6-plus".to_string());
         let base_url = env::var("ANTHROPIC_BASE_URL")
             .unwrap_or_else(|_| "https://coding.dashscope.aliyuncs.com/apps/anthropic".to_string());
-        AIProvider::AlibabaCodingPlan { api_key, model, base_url }
+        AIProvider::AlibabaCodingPlan {
+            api_key,
+            model,
+            base_url,
+        }
     }
 }
 
@@ -184,9 +197,9 @@ impl AIClient {
     pub fn new(config: AIClientConfig) -> Result<Self> {
         // Fix #4: Fail fast on empty API key
         match &config.provider {
-            AIProvider::AlibabaCodingPlan { api_key, .. } |
-            AIProvider::Anthropic { api_key, .. } |
-            AIProvider::OpenAI { api_key, .. } => {
+            AIProvider::AlibabaCodingPlan { api_key, .. }
+            | AIProvider::Anthropic { api_key, .. }
+            | AIProvider::OpenAI { api_key, .. } => {
                 if api_key.is_empty() {
                     return Err(anyhow::anyhow!(
                         "API key is empty. Set ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, \
@@ -196,9 +209,7 @@ impl AIClient {
             }
             AIProvider::Custom { api_key, .. } => {
                 if api_key.as_ref().map_or(false, |k| k.is_empty()) {
-                    return Err(anyhow::anyhow!(
-                        "Custom provider API key is empty."
-                    ));
+                    return Err(anyhow::anyhow!("Custom provider API key is empty."));
                 }
             }
         }
@@ -224,7 +235,11 @@ impl AIClient {
     /// 使用 Anthropic API 协议访问阿里云 Coding Plan endpoint
     pub async fn send_coding_plan_request(&self, request: &AIRequest) -> Result<AIResponse> {
         let (api_key, model, base_url) = match &self.config.provider {
-            AIProvider::AlibabaCodingPlan { api_key, model, base_url } => {
+            AIProvider::AlibabaCodingPlan {
+                api_key,
+                model,
+                base_url,
+            } => {
                 if api_key.is_empty() {
                     return Err(anyhow::anyhow!(
                         "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY environment variable not set.\n\
@@ -234,7 +249,9 @@ impl AIClient {
                 (api_key.clone(), model.clone(), base_url.clone())
             }
             _ => {
-                return Err(anyhow::anyhow!("Expected Alibaba Cloud Coding Plan provider, got different provider"));
+                return Err(anyhow::anyhow!(
+                    "Expected Alibaba Cloud Coding Plan provider, got different provider"
+                ));
             }
         };
 
@@ -242,8 +259,7 @@ impl AIClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-api-key",
-            reqwest::header::HeaderValue::from_str(&api_key)
-                .context("Invalid API key")?,
+            reqwest::header::HeaderValue::from_str(&api_key).context("Invalid API key")?,
         );
         headers.insert(
             "anthropic-version",
@@ -276,7 +292,8 @@ impl AIClient {
         }
 
         // 发送请求
-        let response = self.client
+        let response = self
+            .client
             .post(&format!("{}/messages", base_url))
             .headers(headers)
             .json(&request_body)
@@ -307,9 +324,13 @@ impl AIClient {
 
         let usage = TokenUsage {
             input_tokens: response_json["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: response_json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+            output_tokens: response_json["usage"]["output_tokens"]
+                .as_u64()
+                .unwrap_or(0) as u32,
             total_tokens: response_json["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32
-                + response_json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+                + response_json["usage"]["output_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
         };
 
         Ok(AIResponse {
@@ -333,7 +354,9 @@ impl AIClient {
                 (api_key.clone(), model.clone())
             }
             _ => {
-                return Err(anyhow::anyhow!("Expected Anthropic provider, got different provider"));
+                return Err(anyhow::anyhow!(
+                    "Expected Anthropic provider, got different provider"
+                ));
             }
         };
 
@@ -341,8 +364,7 @@ impl AIClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "x-api-key",
-            reqwest::header::HeaderValue::from_str(&api_key)
-                .context("Invalid API key")?,
+            reqwest::header::HeaderValue::from_str(&api_key).context("Invalid API key")?,
         );
         headers.insert(
             "anthropic-version",
@@ -371,7 +393,8 @@ impl AIClient {
         }
 
         // 发送请求
-        let response = self.client
+        let response = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .headers(headers)
             .json(&request_body)
@@ -402,9 +425,13 @@ impl AIClient {
 
         let usage = TokenUsage {
             input_tokens: response_json["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: response_json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+            output_tokens: response_json["usage"]["output_tokens"]
+                .as_u64()
+                .unwrap_or(0) as u32,
             total_tokens: response_json["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32
-                + response_json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+                + response_json["usage"]["output_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
         };
 
         Ok(AIResponse {
@@ -417,7 +444,8 @@ impl AIClient {
 
     /// 发送消息（简化接口）
     pub async fn send_message(&self, prompt: &str, system: Option<&str>) -> Result<AIResponse> {
-        self.send_message_with_config(prompt, system, None, None).await
+        self.send_message_with_config(prompt, system, None, None)
+            .await
     }
 
     /// 发送消息，支持自定义 max_tokens 和 temperature.
@@ -690,7 +718,11 @@ mod tests {
         match AIClient::new(config) {
             Err(e) => {
                 let err_msg = e.to_string();
-                assert!(err_msg.contains("API key is empty"), "Error should mention empty key: {}", err_msg);
+                assert!(
+                    err_msg.contains("API key is empty"),
+                    "Error should mention empty key: {}",
+                    err_msg
+                );
             }
             Ok(_) => panic!("Empty API key should be rejected"),
         }
@@ -704,8 +736,17 @@ mod tests {
             base_url: "https://coding.dashscope.aliyuncs.com/apps/anthropic".to_string(),
         };
         let debug_str = format!("{:?}", provider);
-        assert!(!debug_str.contains("super-secret"), "Debug output should not contain API key");
-        assert!(!debug_str.contains("sk-sp-"), "Debug output should not contain API key prefix");
-        assert!(debug_str.contains("[REDACTED]"), "Debug output should show [REDACTED]");
+        assert!(
+            !debug_str.contains("super-secret"),
+            "Debug output should not contain API key"
+        );
+        assert!(
+            !debug_str.contains("sk-sp-"),
+            "Debug output should not contain API key prefix"
+        );
+        assert!(
+            debug_str.contains("[REDACTED]"),
+            "Debug output should show [REDACTED]"
+        );
     }
 }
