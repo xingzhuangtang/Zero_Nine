@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
+zn-spec = { path = "../zn-spec" }
 zn-types = { path = "../zn-types" }
 
 [dev-dependencies]

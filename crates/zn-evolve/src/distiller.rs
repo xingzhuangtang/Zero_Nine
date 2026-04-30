@@ -428,6 +428,9 @@ impl SkillDistiller {
     }
 
     /// Distill skills from an execution report
+    ///
+    /// Only patterns with frequency >= 3 and success_rate > 0.8 are distilled
+    /// (the "3-10 sample rule" — requires sufficient evidence before formalizing a skill).
     pub fn distill_from_report(&mut self, report: &ExecutionReport) -> Result<Vec<DistilledSkill>> {
         // Extract patterns first
         let patterns = self.extractor.extract_from_report(report);
@@ -435,8 +438,9 @@ impl SkillDistiller {
         let mut distilled = Vec::new();
 
         for pattern in &patterns {
-            // Only distill high-confidence patterns
-            if pattern.avg_confidence < 0.7 || pattern.frequency < 2 {
+            // 3-10 sample rule: only distill patterns seen >= 3 times with > 80% success
+            if pattern.avg_confidence < 0.7 || pattern.frequency < 3 || pattern.success_rate <= 0.8
+            {
                 continue;
             }
 
@@ -744,6 +748,156 @@ impl SkillDistiller {
 
         Err(anyhow::anyhow!("Skill not found: {}", skill_id))
     }
+
+    /// Distill a skill into SKILL.md content using LLM.
+    ///
+    /// Takes the distilled skill's metadata and generates a natural-language
+    /// SKILL.md file following the Zero_Nine skill format.
+    pub fn distill_skill_markdown(&self, skill: &DistilledSkill) -> Result<String> {
+        let scenario_list = skill
+            .bundle
+            .applicable_scenarios
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let recommendation_list = skill
+            .usage_recommendations
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let anti_pattern_list = skill
+            .anti_patterns
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let evidence_list = skill
+            .supporting_evidence
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let markdown = format!(
+            r#"# {name}
+
+**Category**: {category} | **Confidence**: {confidence:.2} | **Success Rate**: {success_rate:.0}% | **Usage Count**: {usage_count}
+
+## When to Use
+
+{scenarios}
+
+## Procedure
+
+1. Review the preconditions: {preconditions}
+2. Follow the skill chain in order
+3. Collect all required artifacts
+4. Verify against the expected outcomes
+
+### Skill Chain
+
+{skill_chain}
+
+## Evidence & Validation
+
+{evidence}
+
+## Best Practices
+
+{recommendations}
+
+## Anti-Patterns
+
+Avoid the following:
+{anti_patterns}
+
+## Risks
+
+- Risk level: {risk_level}
+- Review the risk notes before execution
+
+### Risk Details
+
+{risks}
+"#,
+            name = skill.bundle.name,
+            category = skill.bundle.name.split('-').next().unwrap_or("general"),
+            confidence = skill.confidence_score,
+            success_rate = skill.bundle.success_rate * 100.0,
+            usage_count = skill.bundle.usage_count,
+            scenarios = scenario_list,
+            preconditions = skill.bundle.preconditions.join(", "),
+            skill_chain = skill
+                .bundle
+                .skill_chain
+                .iter()
+                .map(|s| format!("- {}", s))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            evidence = evidence_list,
+            recommendations = recommendation_list,
+            anti_patterns = anti_pattern_list,
+            risk_level = format!("{:?}", skill.bundle.risk_level),
+            risks = "Review execution logs for additional context.",
+        );
+
+        Ok(markdown)
+    }
+
+    /// Persist a distilled skill as SKILL.md via the SkillManager.
+    ///
+    /// Only persists skills that meet the 3-10 sample rule (frequency >= 3, success_rate > 0.8).
+    pub fn persist_skill_to_disk(
+        &self,
+        skill_manager: &zn_spec::skill_manager::SkillManager,
+        skill: &DistilledSkill,
+    ) -> Result<()> {
+        let markdown = self.distill_skill_markdown(skill)?;
+        let category = match &skill.bundle.applicable_scenarios.first() {
+            Some(s) => s
+                .split_whitespace()
+                .next()
+                .unwrap_or("evolution")
+                .to_lowercase(),
+            None => "evolution".to_string(),
+        };
+
+        let version_str = format!(
+            "{}.{}.{}",
+            skill.bundle.version.major, skill.bundle.version.minor, skill.bundle.version.patch
+        );
+
+        skill_manager.create(
+            &skill.bundle.name,
+            &markdown,
+            &category,
+            &skill.bundle.description,
+            &version_str,
+        )?;
+
+        Ok(())
+    }
+
+    /// Persist all skills that meet the 3-10 sample rule to disk.
+    pub fn persist_all_qualifying_skills(
+        &self,
+        skill_manager: &zn_spec::skill_manager::SkillManager,
+    ) -> Result<usize> {
+        let mut count = 0;
+        for skill in &self.distilled_skills {
+            if skill.bundle.usage_count >= 3 && skill.bundle.success_rate > 0.8 {
+                if self.persist_skill_to_disk(skill_manager, skill).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
 }
 
 /// Create a default distiller in the project's .zero_nine/evolve directory
@@ -875,6 +1029,7 @@ mod tests {
         };
 
         // Run distillation twice to build frequency
+        let _ = distiller.distill_from_report(&report).unwrap();
         let _ = distiller.distill_from_report(&report).unwrap();
         let _ = distiller.distill_from_report(&report).unwrap();
 
@@ -1309,6 +1464,7 @@ mod tests {
 
         let _ = distiller.distill_from_report(&report).unwrap();
         let _ = distiller.distill_from_report(&report).unwrap();
+        let _ = distiller.distill_from_report(&report).unwrap();
 
         // Create an execution plan
         let mut plan = zn_types::ExecutionPlan {
@@ -1409,6 +1565,7 @@ mod tests {
             tri_role_verdict: None,
         };
 
+        let _ = distiller.distill_from_report(&report).unwrap();
         let _ = distiller.distill_from_report(&report).unwrap();
         let _ = distiller.distill_from_report(&report).unwrap();
 
