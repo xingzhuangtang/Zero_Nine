@@ -74,6 +74,8 @@ enum Commands {
         confirm_remote_finish: bool,
         #[arg(long)]
         bridge_address: Option<String>,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
     Status {
         #[arg(long, default_value = ".")]
@@ -88,6 +90,8 @@ enum Commands {
         confirm_remote_finish: bool,
         #[arg(long)]
         bridge_address: Option<String>,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
     Export {
         #[arg(long, default_value = ".")]
@@ -521,12 +525,15 @@ fn main() -> Result<()> {
             goal,
             confirm_remote_finish,
             bridge_address,
+            dry_run,
         } => {
             if let Some(addr) = &bridge_address {
                 set_bridge_address(&project, addr)?;
             }
             let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
-            let output = if matches!(sdk.host(), HostKind::Terminal) {
+            let output = if dry_run {
+                sdk.run_dry(&goal)?
+            } else if matches!(sdk.host(), HostKind::Terminal) {
                 let mut terminal_input = RustylineInput::new()?;
                 sdk.run_goal(&goal, confirm_remote_finish, &mut terminal_input)?
             } else {
@@ -543,12 +550,15 @@ fn main() -> Result<()> {
             host,
             confirm_remote_finish,
             bridge_address,
+            dry_run,
         } => {
             if let Some(addr) = &bridge_address {
                 set_bridge_address(&project, addr)?;
             }
             let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
-            let output = if matches!(sdk.host(), HostKind::Terminal) {
+            let output = if dry_run {
+                sdk.resume_dry()?
+            } else if matches!(sdk.host(), HostKind::Terminal) {
                 let mut terminal_input = RustylineInput::new()?;
                 sdk.resume(confirm_remote_finish, &mut terminal_input)?
             } else {

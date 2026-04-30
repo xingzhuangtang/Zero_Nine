@@ -356,6 +356,132 @@ pub fn resume<T: TerminalInput>(
     Ok(status_summary(project_root)?)
 }
 
+/// Dry-run: generate an execution plan for a goal without executing.
+/// Returns a human-readable summary of what would happen.
+pub fn plan_only(project_root: &Path, goal: &str, host: HostKind) -> Result<String> {
+    initialize_project(project_root, host.clone())?;
+
+    let mut summary = Vec::new();
+    summary.push("═══ DRY-RUN EXECUTION PLAN ═══\n".to_string());
+    summary.push(format!("Goal: {}\n", goal));
+    summary.push(format!("Host: {:?}\n", host));
+
+    // Check for existing ready session with matching goal
+    if let Some(session) = load_latest_brainstorm_session(project_root)? {
+        if session.goal == goal && matches!(session.verdict, BrainstormVerdict::Ready) {
+            if let Some(proposal) = load_latest_proposal(project_root)? {
+                if proposal.goal == goal {
+                    summary.push(format!("Proposal ID: {}\n", proposal.id));
+                    summary.push(format!("Tasks: {}\n", proposal.tasks.len()));
+                    summary.push(format!("Status: {:?}\n", proposal.status));
+
+                    if !proposal.tasks.is_empty() {
+                        summary.push("\n─── Task List ───".to_string());
+                        for (i, task) in proposal.tasks.iter().enumerate() {
+                            summary.push(format!(
+                                "  {}. [{}] {} — {}",
+                                i + 1,
+                                format!("{:?}", task.status).to_lowercase(),
+                                task.title,
+                                task.description.chars().take(80).collect::<String>()
+                            ));
+                            if !task.depends_on.is_empty() {
+                                summary.push(format!("     Depends on: {:?}", task.depends_on));
+                            }
+                        }
+                    }
+
+                    summary.push(format!(
+                        "\nEstimated: ~{} tokens (rough per-task estimate)",
+                        proposal.tasks.len() * 5000
+                    ));
+                    summary
+                        .push("\n\nNOTE: This is a dry-run. No tasks were executed.".to_string());
+                    return Ok(summary.join("\n"));
+                }
+            }
+        }
+    }
+
+    // No existing session — show what would happen
+    summary.push("Status: would_create\n".to_string());
+    summary.push("\nNo brainstorming session found for this goal.\n".to_string());
+    summary.push("Running `zero-nine run --goal \"...\"` would:\n".to_string());
+    summary.push("  1. Start a brainstorming session (or resume existing)\n".to_string());
+    summary.push("  2. Answer clarification questions until Ready\n".to_string());
+    summary.push("  3. Generate a proposal with tasks\n".to_string());
+    summary.push("  4. Execute each task through the subagent dispatcher\n".to_string());
+    summary.push("  5. Verify results and collect evidence\n".to_string());
+    summary.push("\nNOTE: This is a dry-run. No files were modified.".to_string());
+
+    Ok(summary.join("\n"))
+}
+
+/// Dry-run: preview resume plan without executing.
+pub fn resume_plan(project_root: &Path, host: HostKind) -> Result<String> {
+    let mut summary = Vec::new();
+    summary.push("═══ DRY-RUN RESUME PLAN ═══\n".to_string());
+
+    if let Some(session) = load_latest_brainstorm_session(project_root)? {
+        if !matches!(session.verdict, BrainstormVerdict::Ready) {
+            summary.push("Brainstorming not yet ready — more turns needed.\n".to_string());
+            summary.push(format!("Current verdict: {:?}\n", session.verdict));
+            let unanswered = session.questions.iter().filter(|q| !q.answered).count();
+            summary.push(format!("Unanswered questions: {}\n", unanswered));
+            return Ok(summary.join("\n"));
+        }
+    }
+
+    if let Some(proposal) = load_latest_proposal(project_root)? {
+        summary.push(format!("Proposal: {} ({})\n", proposal.id, proposal.goal));
+
+        let pending: Vec<_> = proposal
+            .tasks
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Running
+                )
+            })
+            .collect();
+
+        let completed: Vec<_> = proposal
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.status, TaskStatus::Completed))
+            .collect();
+
+        summary.push(format!(
+            "Completed: {} / {}\n",
+            completed.len(),
+            proposal.tasks.len()
+        ));
+
+        if !pending.is_empty() {
+            summary.push("\n─── Pending Tasks ───".to_string());
+            for (i, task) in pending.iter().enumerate() {
+                summary.push(format!(
+                    "  {}. [{}] {}",
+                    i + 1,
+                    format!("{:?}", task.status).to_lowercase(),
+                    task.title
+                ));
+            }
+        } else {
+            summary.push("\nNo pending tasks — all tasks completed.".to_string());
+        }
+
+        summary.push(format!("\nHost: {:?}", host));
+    } else {
+        summary.push("No active proposal found.".to_string());
+    }
+
+    summary.push("\n\nNOTE: This is a dry-run. No tasks will be executed.".to_string());
+
+    Ok(summary.join("\n"))
+}
+
 pub fn export(project_root: &Path) -> Result<String> {
     let written = export_adapter_files(project_root)?;
     let mut lines = vec!["Exported adapter files:".to_string()];

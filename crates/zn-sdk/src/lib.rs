@@ -144,6 +144,17 @@ impl ZeroNine {
     pub fn brainstorm_host_turn(&self, input: &str) -> Result<String> {
         zn_loop::brainstorm_host_turn(self.project_root(), input, self.config.host.clone())
     }
+
+    /// Dry-run: generate an execution plan for a goal without executing it.
+    /// Returns a human-readable summary of what would happen.
+    pub fn run_dry(&self, goal: &str) -> Result<String> {
+        zn_loop::plan_only(self.project_root(), goal, self.config.host.clone())
+    }
+
+    /// Dry-run: preview resume plan without executing.
+    pub fn resume_dry(&self) -> Result<String> {
+        zn_loop::resume_plan(self.project_root(), self.config.host.clone())
+    }
 }
 
 /// Convenience constructor from a project root and host kind.
