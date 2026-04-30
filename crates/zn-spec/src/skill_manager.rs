@@ -110,7 +110,10 @@ platforms: [claude-code, opencode]
     pub fn delete(&self, name: &str) -> Result<()> {
         let skill_dir = self.skills_dir.join(name);
         if !skill_dir.exists() {
-            return Err(SkillError::NotFound { name: name.to_string() }.into());
+            return Err(SkillError::NotFound {
+                name: name.to_string(),
+            }
+            .into());
         }
         fs::remove_dir_all(&skill_dir).with_context(|| {
             format!("Failed to delete skill directory: {}", skill_dir.display())
@@ -169,6 +172,85 @@ platforms: [claude-code, opencode]
         SkillFile::parse(&content)
     }
 
+    /// T2.4: Load skill summaries matching given tags or category.
+    ///
+    /// Only returns skills whose tags overlap with the query tags,
+    /// or all skills if query is empty.
+    pub fn search_by_tags(
+        &self,
+        tags: &[String],
+        category: Option<&str>,
+    ) -> Result<Vec<SkillSummary>> {
+        let all = self.list()?;
+        if tags.is_empty() && category.is_none() {
+            return Ok(all);
+        }
+
+        let filtered = all
+            .into_iter()
+            .filter(|s| {
+                // Category filter
+                if let Some(cat) = category {
+                    if s.category != cat {
+                        return false;
+                    }
+                }
+                // Tag overlap filter — at least one tag must match
+                if !tags.is_empty() {
+                    let has_overlap = tags.iter().any(|t| s.tags.contains(t));
+                    if !has_overlap {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    /// T2.4: Load Top-N skill summaries for a given goal description.
+    ///
+    /// Uses simple text matching between the goal and skill descriptions/tags
+    /// to score and rank relevance.
+    pub fn top_skills_for_goal(&self, goal: &str, limit: usize) -> Result<Vec<SkillSummary>> {
+        let all = self.list()?;
+        let goal_lower = goal.to_lowercase();
+        let goal_words: Vec<&str> = goal_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .collect();
+
+        let mut scored: Vec<_> = all
+            .into_iter()
+            .map(|s| {
+                let mut score = 0u32;
+                let desc_lower = s.description.to_lowercase();
+                let name_lower = s.name.to_lowercase();
+                let tags_lower: Vec<String> = s.tags.iter().map(|t| t.to_lowercase()).collect();
+
+                for word in &goal_words {
+                    if name_lower.contains(word) {
+                        score += 3;
+                    }
+                    if desc_lower.contains(word) {
+                        score += 1;
+                    }
+                    if tags_lower.iter().any(|t| t.contains(word)) {
+                        score += 2;
+                    }
+                }
+
+                (s, score)
+            })
+            .filter(|(_, score)| *score > 0)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(s, _)| s).collect())
+    }
+
     /// Validate a skill file
     pub fn validate(&self, name: &str) -> Result<Vec<crate::skill_format::SkillValidationIssue>> {
         let _skill_file = self.get_skill_file_path(name)?;
@@ -179,7 +261,10 @@ platforms: [claude-code, opencode]
     fn get_skill_file_path(&self, name: &str) -> Result<PathBuf> {
         let skill_file = self.skills_dir.join(name).join("SKILL.md");
         if !skill_file.exists() {
-            return Err(SkillError::NotFound { name: name.to_string() }.into());
+            return Err(SkillError::NotFound {
+                name: name.to_string(),
+            }
+            .into());
         }
         Ok(skill_file)
     }

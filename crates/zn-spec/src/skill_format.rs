@@ -234,6 +234,9 @@ pub struct SkillSummary {
     pub version: String,
     pub category: String,
     pub valid: bool,
+    /// Tags extracted from skill content for filtering
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl From<&SkillFile> for SkillSummary {
@@ -249,6 +252,7 @@ impl From<&SkillFile> for SkillSummary {
             version: skill.frontmatter.version.clone(),
             category: skill.frontmatter.category.clone(),
             valid: !has_errors,
+            tags: extract_tags(&skill.frontmatter, &skill.content),
         }
     }
 }
@@ -305,6 +309,63 @@ pub fn validate_skill_dir(dir: &Path) -> Result<Vec<SkillValidationIssue>> {
 
     all_issues.extend(issues);
     Ok(all_issues)
+}
+
+/// Extract tags from skill frontmatter and content for indexing.
+///
+/// Tags are derived from:
+/// 1. The `triggers` field in metadata (e.g., ["task.tdd_cycle", "pre_merge"])
+/// 2. Key headings in the content (e.g., "## When to Use" keywords)
+/// 3. The skill category as a baseline tag
+fn extract_tags(frontmatter: &SkillFrontmatter, content: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+
+    // Always include category as a tag
+    tags.push(frontmatter.category.clone());
+
+    // Extract triggers from metadata
+    if let Some(ref meta) = frontmatter.metadata {
+        if let Some(ref zn) = meta.zero_nine {
+            if let Some(ref triggers) = zn.triggers {
+                for trigger in triggers {
+                    tags.push(trigger.clone());
+                }
+            }
+        }
+    }
+
+    // Extract keyword tags from content headings
+    let content_lower = content.to_lowercase();
+    let keyword_map: &[(&str, &str)] = &[
+        ("tdd", "tdd"),
+        ("test-driven", "tdd"),
+        ("git worktree", "worktree"),
+        ("brainstorm", "brainstorming"),
+        ("spec capture", "spec-capture"),
+        ("code review", "code-review"),
+        ("refactor", "refactoring"),
+        ("finish branch", "finish-branch"),
+        ("subagent", "subagent"),
+        ("verification", "verification"),
+        ("drift", "drift-detection"),
+        ("evolution", "evolution"),
+        ("sandbox", "sandbox"),
+        ("cli", "cli"),
+        ("rust", "rust"),
+        ("cargo", "cargo"),
+    ];
+    for &(keyword, tag) in keyword_map {
+        if content_lower.contains(keyword) {
+            let tag_str = tag.to_string();
+            if !tags.contains(&tag_str) {
+                tags.push(tag_str);
+            }
+        }
+    }
+
+    tags.sort();
+    tags.dedup();
+    tags
 }
 
 #[cfg(test)]
