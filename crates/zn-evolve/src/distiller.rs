@@ -334,6 +334,14 @@ impl PatternExtractor {
         }
     }
 
+    /// Get all accumulated patterns across all categories
+    pub fn get_all_patterns(&self) -> Vec<ExecutionPattern> {
+        self.patterns
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect()
+    }
+
     /// Get top patterns by category
     pub fn get_top_patterns(
         &self,
@@ -432,12 +440,15 @@ impl SkillDistiller {
     /// Only patterns with frequency >= 3 and success_rate > 0.8 are distilled
     /// (the "3-10 sample rule" — requires sufficient evidence before formalizing a skill).
     pub fn distill_from_report(&mut self, report: &ExecutionReport) -> Result<Vec<DistilledSkill>> {
-        // Extract patterns first
-        let patterns = self.extractor.extract_from_report(report);
+        // Extract and merge patterns (updates internal state)
+        self.extractor.extract_from_report(report);
+
+        // Get accumulated patterns from internal state
+        let accumulated_patterns = self.extractor.get_all_patterns();
 
         let mut distilled = Vec::new();
 
-        for pattern in &patterns {
+        for pattern in &accumulated_patterns {
             // 3-10 sample rule: only distill patterns seen >= 3 times with > 80% success
             if pattern.avg_confidence < 0.7 || pattern.frequency < 3 || pattern.success_rate <= 0.8
             {
