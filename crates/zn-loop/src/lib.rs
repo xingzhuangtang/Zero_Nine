@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::thread;
 use tracing::info;
+use zn_evolve::integration_engine::IntegrationEngine;
 use zn_evolve::{evaluate, propose_candidate, RewardModel};
 use zn_exec::{
     answer_brainstorm_question, build_execution_envelope, build_plan, build_plan_with_config,
@@ -845,6 +846,30 @@ fn execute_proposal(
             break;
         }
 
+        // IntegrationEngine gate: check before scheduling next batch
+        if let Ok(mut engine) = IntegrationEngine::new(project_root) {
+            let decision = engine.get_integrated_decision();
+            if decision.should_escalate {
+                halt_reason = Some(format!(
+                    "IntegrationEngine recommends escalation: {}",
+                    decision.reasoning.belief_reasoning
+                ));
+                transition_state(
+                    project_root,
+                    &mut state,
+                    LoopStage::Escalated,
+                    "integration_engine_escalate",
+                );
+                break;
+            }
+            if decision.should_change_hypothesis {
+                info!(
+                    "IntegrationEngine suggests hypothesis change: {}",
+                    decision.reasoning.curriculum_reasoning
+                );
+            }
+        }
+
         let Some(schedule) = choose_next_ready_batch(&proposal.tasks, max_retries) else {
             break;
         };
@@ -1152,6 +1177,18 @@ fn execute_proposal(
             if let Err(e) = reward_result {
                 // Log error but don't fail the execution
                 info!("Reward model update failed: {}", e);
+            }
+
+            // IntegrationEngine: record execution into all three subsystems
+            if let Ok(mut engine) = IntegrationEngine::new(project_root) {
+                if let Err(e) = engine.record_execution(
+                    &report.task_id,
+                    report.success,
+                    &report.summary,
+                    &report,
+                ) {
+                    info!("IntegrationEngine record_execution failed: {}", e);
+                }
             }
 
             if let Some(candidate) = propose_candidate(&report) {
