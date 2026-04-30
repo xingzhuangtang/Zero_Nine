@@ -14,7 +14,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use zn_types::{RuntimeEvent, TraceContext, MetricsSnapshot};
+use zn_types::{MetricsSnapshot, RuntimeEvent, TraceContext};
 
 /// Event emitter for structured observability
 pub struct EventEmitter {
@@ -57,7 +57,10 @@ impl EventEmitter {
             payload,
             trace_id: self.trace_context.as_ref().map(|c| c.trace_id.clone()),
             span_id: self.trace_context.as_ref().map(|c| c.span_id.clone()),
-            parent_span_id: self.trace_context.as_ref().and_then(|c| c.parent_span_id.clone()),
+            parent_span_id: self
+                .trace_context
+                .as_ref()
+                .and_then(|c| c.parent_span_id.clone()),
             latency_ms: None,
             metadata: None,
         };
@@ -83,7 +86,10 @@ impl EventEmitter {
             payload,
             trace_id: self.trace_context.as_ref().map(|c| c.trace_id.clone()),
             span_id: self.trace_context.as_ref().map(|c| c.span_id.clone()),
-            parent_span_id: self.trace_context.as_ref().and_then(|c| c.parent_span_id.clone()),
+            parent_span_id: self
+                .trace_context
+                .as_ref()
+                .and_then(|c| c.parent_span_id.clone()),
             latency_ms: None,
             metadata: None,
         };
@@ -112,7 +118,10 @@ impl EventEmitter {
             payload: Some(metadata),
             trace_id: self.trace_context.as_ref().map(|c| c.trace_id.clone()),
             span_id: self.trace_context.as_ref().map(|c| c.span_id.clone()),
-            parent_span_id: self.trace_context.as_ref().and_then(|c| c.parent_span_id.clone()),
+            parent_span_id: self
+                .trace_context
+                .as_ref()
+                .and_then(|c| c.parent_span_id.clone()),
             latency_ms: Some(latency_ms),
             metadata: None,
         };
@@ -125,7 +134,9 @@ impl EventEmitter {
             .create(true)
             .append(true)
             .open(&self.events_file)
-            .with_context(|| format!("Failed to open events file: {}", self.events_file.display()))?;
+            .with_context(|| {
+                format!("Failed to open events file: {}", self.events_file.display())
+            })?;
 
         let mut writer = std::io::BufWriter::new(file);
         let line = serde_json::to_string(event)?;
@@ -149,7 +160,8 @@ impl EventEmitter {
     /// Start a new trace for a proposal
     pub fn start_proposal_trace(&mut self, proposal_id: &str) -> TraceContext {
         let mut ctx = TraceContext::new();
-        ctx.attributes.insert("proposal_id".to_string(), proposal_id.to_string());
+        ctx.attributes
+            .insert("proposal_id".to_string(), proposal_id.to_string());
         self.trace_context = Some(ctx.clone());
         ctx
     }
@@ -157,8 +169,10 @@ impl EventEmitter {
     /// Start a new trace for a task
     pub fn start_task_trace(&mut self, proposal_id: &str, task_id: &str) -> TraceContext {
         let mut ctx = TraceContext::new();
-        ctx.attributes.insert("proposal_id".to_string(), proposal_id.to_string());
-        ctx.attributes.insert("task_id".to_string(), task_id.to_string());
+        ctx.attributes
+            .insert("proposal_id".to_string(), proposal_id.to_string());
+        ctx.attributes
+            .insert("task_id".to_string(), task_id.to_string());
         self.trace_context = Some(ctx.clone());
         ctx
     }
@@ -229,7 +243,9 @@ impl MetricsAggregator {
 
     /// Get latency statistics for a task
     pub fn get_latency_stats(&self, task_id: Option<&str>) -> LatencyStats {
-        let filtered: Vec<_> = self.snapshots.iter()
+        let filtered: Vec<_> = self
+            .snapshots
+            .iter()
             .filter(|s| task_id.map_or(true, |t| s.task_id == t))
             .collect();
 
@@ -261,8 +277,12 @@ impl MetricsAggregator {
 
     /// Get success rate for a proposal
     pub fn get_success_rate(&self, proposal_id: Option<&str>) -> f32 {
-        let filtered: Vec<_> = self.snapshots.iter()
-            .filter(|s| proposal_id.map_or(true, |p| s.proposal_id.as_ref().map_or(true, |sp| sp == p)))
+        let filtered: Vec<_> = self
+            .snapshots
+            .iter()
+            .filter(|s| {
+                proposal_id.map_or(true, |p| s.proposal_id.as_ref().map_or(true, |sp| sp == p))
+            })
             .collect();
 
         if filtered.is_empty() {
@@ -353,7 +373,11 @@ impl EventQuery {
                 continue;
             }
             if let Ok(event) = serde_json::from_str::<RuntimeEvent>(&line) {
-                if event.proposal_id.as_ref().map_or(false, |p| p == proposal_id) {
+                if event
+                    .proposal_id
+                    .as_ref()
+                    .map_or(false, |p| p == proposal_id)
+                {
                     results.push(event);
                     if results.len() >= limit {
                         break;
@@ -405,7 +429,10 @@ impl EventQuery {
 
         // Build span tree
         for event in &events {
-            let span_id = event.span_id.clone().unwrap_or_else(|| "unknown".to_string());
+            let span_id = event
+                .span_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             let parent_id = event.parent_span_id.clone();
 
             let span = TraceSpan {
@@ -457,7 +484,9 @@ pub struct TraceSpan {
 }
 
 /// Create default observability components for a project
-pub fn create_default_observability(project_root: &Path) -> Result<(EventEmitter, MetricsAggregator, EventQuery)> {
+pub fn create_default_observability(
+    project_root: &Path,
+) -> Result<(EventEmitter, MetricsAggregator, EventQuery)> {
     let events_file = project_root
         .join(".zero_nine")
         .join("runtime")
@@ -498,7 +527,9 @@ mod tests {
         let _ = fs::remove_file(&tmp_file);
 
         let mut emitter = EventEmitter::new(tmp_file.clone()).unwrap();
-        emitter.emit("test_event", Some(serde_json::json!({"key": "value"}))).unwrap();
+        emitter
+            .emit("test_event", Some(serde_json::json!({"key": "value"})))
+            .unwrap();
 
         // Verify event was written
         let query = EventQuery::new(tmp_file.clone()).unwrap();
@@ -564,7 +595,9 @@ mod tests {
 
         // Query by trace
         let query = EventQuery::new(tmp_file.clone()).unwrap();
-        let events = query.query_by_trace(&emitter.trace_context().unwrap().trace_id, 10).unwrap();
+        let events = query
+            .query_by_trace(&emitter.trace_context().unwrap().trace_id, 10)
+            .unwrap();
         assert!(!events.is_empty());
 
         let _ = fs::remove_file(&tmp_file);

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use zn_evolve::scorer::create_default_scorer;
 use zn_host::detect_host;
 use zn_loop::TerminalInput;
-use zn_sdk::{from_project, ZeroNine};
+use zn_sdk::from_project;
 use zn_spec::memory_tool::{
     create_default_manager as create_memory_manager, MemoryAction, MemoryTarget,
 };
@@ -1519,10 +1519,7 @@ fn main() -> Result<()> {
         }
         Commands::BridgeServer { port } => {
             use std::net::SocketAddr;
-            use std::sync::Arc;
-            use zn_bridge::{
-                BridgeConfig, BridgeServer, DispatchHandler, EvidenceHandler, StatusHandler,
-            };
+            use zn_bridge::{BridgeConfig, BridgeServer};
             use zn_exec::LocalCliHandler;
 
             let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

@@ -159,8 +159,11 @@ impl OutputOptimizer {
             }
 
             // Skip progress bars (lines with repeated = or - characters)
-            if line.contains("====") || line.contains("----") ||
-               line.contains("[====") || line.contains("[----") {
+            if line.contains("====")
+                || line.contains("----")
+                || line.contains("[====")
+                || line.contains("[----")
+            {
                 continue;
             }
 
@@ -211,13 +214,23 @@ impl OutputOptimizer {
             let head_lines = self.max_lines / 3;
             let tail_lines = self.max_lines - head_lines;
 
-            let mut result: Vec<String> = lines[..head_lines.min(total_lines)].iter().map(|s| s.to_string()).collect();
+            let mut result: Vec<String> = lines[..head_lines.min(total_lines)]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             result.push(String::new());
-            let truncation_msg = format!("--- {} lines truncated ({} total) ---",
-                total_lines - head_lines - tail_lines, total_lines);
+            let truncation_msg = format!(
+                "--- {} lines truncated ({} total) ---",
+                total_lines - head_lines - tail_lines,
+                total_lines
+            );
             result.push(truncation_msg);
             result.push(String::new());
-            result.extend(lines[tail_lines.min(total_lines)..].iter().map(|s| s.to_string()));
+            result.extend(
+                lines[tail_lines.min(total_lines)..]
+                    .iter()
+                    .map(|s| s.to_string()),
+            );
             return result.join("\n");
         }
 
@@ -332,7 +345,8 @@ mod tests {
     #[test]
     fn test_output_optimizer_truncates() {
         let optimizer = OutputOptimizer::new(10, 0, false);
-        let input = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12";
+        let input =
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12";
         let result = optimizer.optimize(input);
         assert!(result.contains("truncated"));
     }

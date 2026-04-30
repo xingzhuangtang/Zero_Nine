@@ -29,12 +29,11 @@ pub struct ParsedLlmResponse {
 /// Call the LLM API synchronously with the given prompt.
 pub fn call_llm_sync(prompt: &str, system: Option<&str>) -> Result<zn_evolve::AIResponse> {
     let config = AIClientConfig::default();
-    let client = AIClient::new(config).context(
-        "Failed to create AIClient — set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY",
-    )?;
+    let client = AIClient::new(config)
+        .context("Failed to create AIClient — set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY")?;
 
-    let rt = tokio::runtime::Runtime::new()
-        .context("Failed to create tokio runtime for LLM call")?;
+    let rt =
+        tokio::runtime::Runtime::new().context("Failed to create tokio runtime for LLM call")?;
     rt.block_on(async {
         client
             .send_message_with_config(
@@ -254,13 +253,16 @@ Additional notes below.
         let tmp = temp_dir().join("llm_write_test");
         let _ = std::fs::remove_dir_all(&tmp);
 
-        let contents = vec![
-            ("deep/nested/dir/file.txt".to_string(), "hello\n".to_string()),
-        ];
+        let contents = vec![(
+            "deep/nested/dir/file.txt".to_string(),
+            "hello\n".to_string(),
+        )];
         let written = write_parsed_files(&tmp, &contents).unwrap();
         assert_eq!(written.len(), 1);
         assert!(written[0].ends_with("deep/nested/dir/file.txt"));
-        assert!(std::fs::read_to_string(&written[0]).unwrap().contains("hello"));
+        assert!(std::fs::read_to_string(&written[0])
+            .unwrap()
+            .contains("hello"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

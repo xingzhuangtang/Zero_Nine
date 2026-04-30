@@ -31,6 +31,7 @@ struct TaskTracker {
     summary: String,
     artifacts: Vec<String>,
     progress_percent: i32,
+    evidence_records: Vec<proto::EvidenceRecord>,
 }
 
 /// Local CLI handler for the gRPC bridge server.
@@ -82,8 +83,7 @@ impl LocalCliHandler {
         let _host_kind: HostKind = if req.host_kind.is_empty() {
             HostKind::Terminal
         } else {
-            serde_json::from_str(&format!("\"{}\"", req.host_kind))
-                .unwrap_or(HostKind::Terminal)
+            serde_json::from_str(&format!("\"{}\"", req.host_kind)).unwrap_or(HostKind::Terminal)
         };
 
         let task = TaskItem {
@@ -147,6 +147,7 @@ impl DispatchHandler for LocalCliHandler {
                     summary: "Dispatched to local CLI".to_string(),
                     artifacts: vec![],
                     progress_percent: 10,
+                    evidence_records: vec![],
                 },
             );
         }
@@ -172,6 +173,7 @@ impl DispatchHandler for LocalCliHandler {
                 let outcome: SubagentExecutionOutcome = outcome;
                 let tracker = trackers.get_mut(&tracking_task_id);
                 if let Some(tracker) = tracker {
+                    let verdict = outcome.tri_role_verdict.clone();
                     if outcome.all_succeeded {
                         tracker.status = proto::TaskState::Completed;
                         tracker.summary = "All subagent dispatches succeeded".to_string();
@@ -183,7 +185,29 @@ impl DispatchHandler for LocalCliHandler {
                             .unwrap_or_else(|| "Subagent execution failed".to_string());
                         tracker.progress_percent = 0;
                     }
-                    tracker.artifacts = outcome.artifact_paths;
+                    tracker.artifacts = outcome.artifact_paths.clone();
+
+                    // Build evidence records from artifacts and verdict
+                    for path in &outcome.artifact_paths {
+                        tracker.evidence_records.push(proto::EvidenceRecord {
+                            id: format!("evidence-{}", uuid::Uuid::new_v4().simple()),
+                            task_id: tracking_task_id.clone(),
+                            kind: "artifact".to_string(),
+                            content: String::new(),
+                            file_path: path.clone(),
+                            timestamp: chrono::Utc::now().timestamp(),
+                        });
+                    }
+                    if let Some(verdict_str) = verdict {
+                        tracker.evidence_records.push(proto::EvidenceRecord {
+                            id: format!("verdict-{}", uuid::Uuid::new_v4().simple()),
+                            task_id: tracking_task_id.clone(),
+                            kind: "verdict".to_string(),
+                            content: verdict_str,
+                            file_path: String::new(),
+                            timestamp: chrono::Utc::now().timestamp(),
+                        });
+                    }
                 }
             } else {
                 if let Some(tracker) = trackers.get_mut(&tracking_task_id) {
@@ -266,12 +290,17 @@ impl StatusHandler for LocalCliHandler {
 impl EvidenceHandler for LocalCliHandler {
     async fn stream_evidence(
         &self,
-        _request: proto::EvidenceRequest,
+        request: proto::EvidenceRequest,
     ) -> Result<mpsc::Receiver<Result<proto::EvidenceRecord, Status>>> {
         let (tx, rx) = mpsc::channel(32);
-        // Evidence is collected post-execution in the report builder.
-        // This handler returns an empty stream for now.
-        drop(tx);
+
+        let trackers = self.trackers.lock().await;
+        if let Some(tracker) = trackers.get(&request.task_id) {
+            for record in &tracker.evidence_records {
+                let _ = tx.send(Ok(record.clone())).await;
+            }
+        }
+        // Channel closes after sending all buffered evidence
         Ok(rx)
     }
 

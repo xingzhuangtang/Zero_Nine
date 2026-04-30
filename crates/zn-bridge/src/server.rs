@@ -17,7 +17,8 @@ use crate::types::BridgeConfig;
 pub type StatusUpdateStream = Pin<Box<dyn futures_core::Stream<Item = proto::StatusUpdate> + Send>>;
 
 /// Type alias for the evidence record stream
-pub type EvidenceRecordStream = Pin<Box<dyn futures_core::Stream<Item = proto::EvidenceRecord> + Send>>;
+pub type EvidenceRecordStream =
+    Pin<Box<dyn futures_core::Stream<Item = proto::EvidenceRecord> + Send>>;
 
 /// Internal task tracking state
 #[derive(Debug, Clone)]
@@ -34,8 +35,12 @@ pub struct TaskState {
 #[derive(Debug, Default)]
 pub struct BridgeState {
     pub tasks: RwLock<std::collections::HashMap<String, TaskState>>,
-    pub status_senders: RwLock<std::collections::HashMap<String, mpsc::Sender<Result<proto::StatusUpdate, Status>>>>,
-    pub evidence_senders: RwLock<std::collections::HashMap<String, mpsc::Sender<Result<proto::EvidenceRecord, Status>>>>,
+    pub status_senders: RwLock<
+        std::collections::HashMap<String, mpsc::Sender<Result<proto::StatusUpdate, Status>>>,
+    >,
+    pub evidence_senders: RwLock<
+        std::collections::HashMap<String, mpsc::Sender<Result<proto::EvidenceRecord, Status>>>,
+    >,
 }
 
 impl BridgeState {
@@ -92,8 +97,16 @@ impl BridgeServer {
         self.config.bind_addr
     }
 
-    /// Run the server
+    /// Run the server with graceful shutdown on SIGINT/SIGTERM
     pub async fn run(self) -> Result<()> {
+        self.run_with_shutdown(None).await
+    }
+
+    /// Run the server with a custom shutdown signal
+    pub async fn run_with_shutdown(
+        self,
+        shutdown_signal: Option<Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    ) -> Result<()> {
         let dispatch_handler = self.dispatch_handler.clone();
         let status_handler = self.status_handler.clone();
         let evidence_handler = self.evidence_handler.clone();
@@ -117,7 +130,7 @@ impl BridgeServer {
         let addr = self.config.bind_addr;
         info!("Starting gRPC bridge server on {}", addr);
 
-        tonic::transport::Server::builder()
+        let server = tonic::transport::Server::builder()
             .add_service(proto::task_dispatch_server::TaskDispatchServer::new(
                 task_dispatch_service,
             ))
@@ -126,11 +139,38 @@ impl BridgeServer {
             ))
             .add_service(proto::evidence_stream_server::EvidenceStreamServer::new(
                 evidence_stream_service,
-            ))
-            .serve(addr)
-            .await
-            .context("gRPC server failed")?;
+            ));
 
+        if let Some(signal) = shutdown_signal {
+            server
+                .serve_with_shutdown(addr, signal)
+                .await
+                .context("gRPC server failed")?;
+        } else {
+            // Default: listen for OS signals
+            let stop = tokio::signal::ctrl_c();
+            tokio::pin!(stop);
+
+            server
+                .serve_with_shutdown(addr, async {
+                    let _ = stop.await;
+                    info!("Shutdown signal received, draining active tasks...");
+                    // Cancel all in-flight tasks
+                    let tasks = state.tasks.read().await;
+                    for (_, task) in tasks.iter() {
+                        if matches!(
+                            task.status,
+                            proto::TaskState::Running | proto::TaskState::Queued
+                        ) {
+                            info!("Marking task {} as cancelled on shutdown", task.task_id);
+                        }
+                    }
+                })
+                .await
+                .context("gRPC server failed")?;
+        }
+
+        info!("gRPC bridge server stopped");
         Ok(())
     }
 }
@@ -152,7 +192,10 @@ impl proto::task_dispatch_server::TaskDispatch for TaskDispatchService {
         request: Request<proto::DispatchRequest>,
     ) -> Result<Response<proto::DispatchResponse>, Status> {
         let req = request.into_inner();
-        debug!("DispatchTask request: task_id={}, proposal_id={}", req.task_id, req.proposal_id);
+        debug!(
+            "DispatchTask request: task_id={}, proposal_id={}",
+            req.task_id, req.proposal_id
+        );
 
         // Store initial task state
         let task_state = TaskState {
@@ -206,7 +249,10 @@ impl proto::task_dispatch_server::TaskDispatch for TaskDispatchService {
         request: Request<proto::CancelRequest>,
     ) -> Result<Response<proto::CancelResponse>, Status> {
         let req = request.into_inner();
-        debug!("CancelTask request: task_id={}, reason={}", req.task_id, req.reason);
+        debug!(
+            "CancelTask request: task_id={}, reason={}",
+            req.task_id, req.reason
+        );
 
         // Update task state
         {

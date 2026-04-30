@@ -3,28 +3,97 @@
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::time::sleep;
 use tonic::transport::Channel;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use zn_bridge::proto::{
-    task_dispatch_client::TaskDispatchClient,
-    task_status_client::TaskStatusClient,
-    evidence_stream_client::EvidenceStreamClient,
-    DispatchRequest, TaskState,
+    evidence_stream_client::EvidenceStreamClient, task_dispatch_client::TaskDispatchClient,
+    task_status_client::TaskStatusClient, DispatchRequest, TaskState,
 };
-use zn_bridge::types::{zn_execution_mode_to_proto, zn_workspace_strategy_to_proto, zn_quality_gate_to_proto};
+use zn_bridge::types::{
+    zn_execution_mode_to_proto, zn_quality_gate_to_proto, zn_workspace_strategy_to_proto,
+};
 use zn_types::{ExecutionPlan, TaskItem};
+
+/// Retry configuration for BridgeClient
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_retries: u32,
+    /// Initial backoff duration
+    pub initial_backoff: Duration,
+    /// Maximum backoff duration (capped)
+    pub max_backoff: Duration,
+    /// Backoff multiplier (e.g., 2.0 for exponential)
+    pub backoff_multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+        }
+    }
+}
 
 /// gRPC Bridge Client for communicating with agents
 pub struct BridgeClient {
     dispatch_client: TaskDispatchClient<Channel>,
     status_client: TaskStatusClient<Channel>,
     evidence_client: EvidenceStreamClient<Channel>,
+    addr: SocketAddr,
+    retry_config: RetryConfig,
 }
 
 impl BridgeClient {
     /// Connect to a gRPC bridge server at the specified address
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
+        Self::connect_with_retry(addr, RetryConfig::default()).await
+    }
+
+    /// Connect with custom retry configuration
+    pub async fn connect_with_retry(addr: SocketAddr, config: RetryConfig) -> Result<Self> {
+        let mut backoff = config.initial_backoff;
+        let mut last_error = None;
+
+        for attempt in 0..=config.max_retries {
+            match Self::try_connect(addr).await {
+                Ok(client) => {
+                    info!(
+                        "Connected to gRPC bridge at {} (attempt {})",
+                        addr,
+                        attempt + 1
+                    );
+                    return Ok(client);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to gRPC bridge at {} (attempt {}/{}): {}",
+                        addr,
+                        attempt + 1,
+                        config.max_retries + 1,
+                        e
+                    );
+                    last_error = Some(e);
+                    if attempt < config.max_retries {
+                        sleep(backoff).await;
+                        backoff = std::cmp::min(
+                            backoff.mul_f64(config.backoff_multiplier),
+                            config.max_backoff,
+                        );
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to connect to {}", addr)))
+    }
+
+    async fn try_connect(addr: SocketAddr) -> Result<Self> {
         let channel = Channel::from_shared(format!("http://{}", addr))
             .context("failed to create gRPC channel")?
             .connect_timeout(Duration::from_secs(10))
@@ -37,7 +106,20 @@ impl BridgeClient {
             dispatch_client: TaskDispatchClient::new(channel.clone()),
             status_client: TaskStatusClient::new(channel.clone()),
             evidence_client: EvidenceStreamClient::new(channel),
+            addr,
+            retry_config: RetryConfig::default(),
         })
+    }
+
+    /// Reconnect to the bridge server (useful after server restart)
+    pub async fn reconnect(&mut self) -> Result<()> {
+        let addr = self.addr;
+        let new_client = Self::try_connect(addr).await?;
+        self.dispatch_client = new_client.dispatch_client;
+        self.status_client = new_client.status_client;
+        self.evidence_client = new_client.evidence_client;
+        info!("Reconnected to gRPC bridge at {}", addr);
+        Ok(())
     }
 
     /// Dispatch a task to an agent via gRPC
@@ -50,9 +132,11 @@ impl BridgeClient {
     ) -> Result<String> {
         let mode = plan.mode.clone();
         let workspace_strategy = plan.workspace_strategy.clone();
-        let quality_gates = plan.quality_gates.iter().map(|g| {
-            zn_quality_gate_to_proto(g)
-        }).collect::<Vec<_>>();
+        let quality_gates = plan
+            .quality_gates
+            .iter()
+            .map(|g| zn_quality_gate_to_proto(g))
+            .collect::<Vec<_>>();
 
         let request = DispatchRequest {
             task_id: task.id.clone(),
@@ -66,13 +150,17 @@ impl BridgeClient {
             host_kind: "claude_code".to_string(),
         };
 
-        let response = self.dispatch_client
+        let response = self
+            .dispatch_client
             .dispatch_task(request)
             .await
             .context("failed to dispatch task")?
             .into_inner();
 
-        debug!("Dispatched task {} -> agent_task_id={}", task.id, response.agent_task_id);
+        debug!(
+            "Dispatched task {} -> agent_task_id={}",
+            task.id, response.agent_task_id
+        );
         Ok(response.agent_task_id)
     }
 
@@ -83,7 +171,7 @@ impl BridgeClient {
         agent_task_id: &str,
         timeout_secs: u64,
     ) -> Result<TaskResult> {
-        use tokio::time::{timeout, interval};
+        use tokio::time::{interval, timeout};
         use tokio_stream::StreamExt;
 
         let mut poll_interval = interval(Duration::from_secs(2));
@@ -94,7 +182,8 @@ impl BridgeClient {
                 task_id: task_id.to_string(),
                 agent_task_id: agent_task_id.to_string(),
             };
-            let response = self.status_client
+            let response = self
+                .status_client
                 .stream_status(request)
                 .await
                 .context("failed to stream status")?
@@ -150,7 +239,11 @@ impl BridgeClient {
 
         match result {
             Ok(task_result) => Ok(task_result),
-            Err(_) => Err(anyhow::anyhow!("Task {} timed out after {} seconds", task_id, timeout_secs)),
+            Err(_) => Err(anyhow::anyhow!(
+                "Task {} timed out after {} seconds",
+                task_id,
+                timeout_secs
+            )),
         }
     }
 
@@ -167,7 +260,8 @@ impl BridgeClient {
             agent_task_id: agent_task_id.to_string(),
         };
 
-        let mut stream = self.evidence_client
+        let mut stream = self
+            .evidence_client
             .stream_evidence(request)
             .await
             .context("failed to stream evidence")?
@@ -194,7 +288,7 @@ impl BridgeClient {
 #[derive(Debug, Clone)]
 pub struct TaskResult {
     pub task_id: String,
-    pub state: i32,  // TaskState enum value
+    pub state: i32, // TaskState enum value
     pub summary: String,
     pub artifacts: Vec<String>,
     pub evidence: Vec<zn_bridge::proto::EvidenceRecord>,

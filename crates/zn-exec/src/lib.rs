@@ -1654,7 +1654,32 @@ pub fn prepare_workspace(
                     sandbox_root.display()
                 )
             })?;
+
+            // Write .gitignore to isolate sandbox from git tracking
+            let gitignore = sandbox_root.join(".gitignore");
+            fs::write(&gitignore, "*\n!.gitignore\n")
+                .with_context(|| format!("failed to write {}", gitignore.display()))?;
+
+            // Write sandbox metadata description
+            let readme = sandbox_root.join("SANDBOX.md");
             let now = Utc::now();
+            fs::write(
+                &readme,
+                format!(
+                    "# Sandbox for Task: {}\n\n\
+                     - **Objective**: {}\n\
+                     - **Created**: {}\n\
+                     - **Strategy**: Sandboxed (isolated directory)\n\
+                     - **Status**: Prepared\n\n\
+                     All files in this directory are isolated from the main repository\n\
+                     and will be cleaned up after task execution.\n",
+                    plan.task_id,
+                    plan.objective,
+                    now.to_rfc3339()
+                ),
+            )
+            .with_context(|| format!("failed to write {}", readme.display()))?;
+
             let record = WorkspaceRecord {
                 strategy: WorkspaceStrategy::Sandboxed,
                 status: WorkspaceStatus::Prepared,
@@ -1664,11 +1689,13 @@ pub fn prepare_workspace(
                 head_branch: None,
                 created_at: now,
                 updated_at: now,
-                notes: vec![
-                    "Prepared a filesystem sandbox without git worktree integration.".to_string(),
-                ],
+                notes: vec!["Prepared sandbox with .gitignore isolation and metadata.".to_string()],
             };
-            let mut created_paths = vec![sandbox_root.display().to_string()];
+            let mut created_paths = vec![
+                sandbox_root.display().to_string(),
+                gitignore.display().to_string(),
+                readme.display().to_string(),
+            ];
             created_paths.extend(persist_workspace_preparation_artifacts(
                 project_root,
                 plan,
