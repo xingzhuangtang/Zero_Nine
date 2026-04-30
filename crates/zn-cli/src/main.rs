@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
+use rustyline::DefaultEditor;
 use std::path::PathBuf;
 use zn_evolve::scorer::create_default_scorer;
 use zn_host::detect_host;
+use zn_loop::TerminalInput;
 use zn_sdk::{from_project, ZeroNine};
 use zn_spec::memory_tool::{
     create_default_manager as create_memory_manager, MemoryAction, MemoryTarget,
@@ -14,6 +16,27 @@ use zn_spec::skill_manager::create_default_manager;
 use zn_types::HostKind;
 
 mod tui_dashboard;
+
+/// Rustyline-backed terminal input — implements TerminalInput for zn-loop.
+struct RustylineInput {
+    editor: DefaultEditor,
+}
+
+impl RustylineInput {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            editor: DefaultEditor::new()?,
+        })
+    }
+}
+
+impl TerminalInput for RustylineInput {
+    fn readline(&mut self, prompt: &str) -> Result<String> {
+        let answer = self.editor.readline(prompt)?;
+        self.editor.add_history_entry(&answer)?;
+        Ok(answer)
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "zero-nine", version, about = "Zero_Nine orchestration engine")]
@@ -484,8 +507,11 @@ fn main() -> Result<()> {
                     anyhow!("goal or answer input is required for host-native brainstorming")
                 })?;
                 sdk.brainstorm_host_turn(input)?
+            } else if matches!(sdk.host(), HostKind::Terminal) {
+                let mut terminal_input = RustylineInput::new()?;
+                sdk.brainstorm(goal.as_deref(), resume, &mut terminal_input)?
             } else {
-                sdk.brainstorm(goal.as_deref(), resume)?
+                sdk.brainstorm_headless(goal.as_deref(), resume)?
             };
             println!("{}", output);
         }
@@ -500,7 +526,12 @@ fn main() -> Result<()> {
                 set_bridge_address(&project, addr)?;
             }
             let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
-            let output = sdk.run_goal(&goal, confirm_remote_finish)?;
+            let output = if matches!(sdk.host(), HostKind::Terminal) {
+                let mut terminal_input = RustylineInput::new()?;
+                sdk.run_goal(&goal, confirm_remote_finish, &mut terminal_input)?
+            } else {
+                sdk.run_goal_headless(&goal, confirm_remote_finish)?
+            };
             println!("{}", output);
         }
         Commands::Status { project } => {
@@ -517,7 +548,13 @@ fn main() -> Result<()> {
                 set_bridge_address(&project, addr)?;
             }
             let sdk = from_project(&project.display().to_string(), detect_host(host.as_deref()));
-            println!("{}", sdk.resume(confirm_remote_finish)?);
+            let output = if matches!(sdk.host(), HostKind::Terminal) {
+                let mut terminal_input = RustylineInput::new()?;
+                sdk.resume(confirm_remote_finish, &mut terminal_input)?
+            } else {
+                sdk.resume_headless(confirm_remote_finish)?
+            };
+            println!("{}", output);
         }
         Commands::Export { project } => {
             let sdk = from_project(&project.display().to_string(), HostKind::Terminal);

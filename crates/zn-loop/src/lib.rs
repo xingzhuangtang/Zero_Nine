@@ -2,7 +2,6 @@ pub mod cron_scheduler;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use rustyline::DefaultEditor;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -23,6 +22,7 @@ use zn_spec::{
     save_brainstorm_session, save_loop_state, save_manifest, save_proposal, spec_bundle,
     status_summary, update_progress_markdown, validate_proposal_spec, write_spec_validation_report,
 };
+use zn_types::{BrainstormError, ProposalError};
 use zn_types::{
     BrainstormSession, BrainstormVerdict, ExecutionEnvelope, ExecutionOutcome, ExecutionPlan,
     ExecutionReport, FailureCategory, FailureClassification, FailureSeverity, HostKind, LoopStage,
@@ -30,7 +30,11 @@ use zn_types::{
     StateTransition, TaskStatus,
 };
 use zn_types::{CompensationAction, CompensationType, EvolutionCandidate, EvolutionKind};
-use zn_types::{BrainstormError, ProposalError};
+
+/// Abstraction for terminal input — decouples zn-loop from rustyline.
+pub trait TerminalInput {
+    fn readline(&mut self, prompt: &str) -> Result<String>;
+}
 
 pub fn initialize_project(project_root: &Path, host: HostKind) -> Result<()> {
     ensure_layout(project_root)?;
@@ -47,17 +51,17 @@ pub fn initialize_project(project_root: &Path, host: HostKind) -> Result<()> {
     Ok(())
 }
 
-pub fn brainstorm(
+pub fn brainstorm<T: TerminalInput>(
     project_root: &Path,
     goal: Option<&str>,
     host: HostKind,
     resume: bool,
+    input: &mut T,
 ) -> Result<String> {
     initialize_project(project_root, host.clone())?;
 
     let mut session = if resume {
-        load_latest_brainstorm_session(project_root)?
-            .ok_or(BrainstormError::NoSessionToResume)?
+        load_latest_brainstorm_session(project_root)?.ok_or(BrainstormError::NoSessionToResume)?
     } else {
         let goal = goal.ok_or(BrainstormError::GoalRequired)?;
         let session = start_brainstorm(goal, host.clone());
@@ -75,7 +79,7 @@ pub fn brainstorm(
 
     match host {
         HostKind::Terminal => {
-            run_terminal_brainstorm(project_root, &mut session)?;
+            run_terminal_brainstorm(project_root, &mut session, input)?;
             finalize_brainstorm(project_root, &session)
         }
         HostKind::ClaudeCode | HostKind::OpenCode => {
@@ -272,11 +276,12 @@ fn render_host_brainstorm_status(
     Ok(lines.join("\n"))
 }
 
-pub fn run_goal(
+pub fn run_goal<T: TerminalInput>(
     project_root: &Path,
     goal: &str,
     host: HostKind,
     allow_remote_finish: bool,
+    input: &mut T,
 ) -> Result<String> {
     initialize_project(project_root, host.clone())?;
 
@@ -294,7 +299,7 @@ pub fn run_goal(
         }
     }
 
-    let session = ensure_brainstorm_ready(project_root, goal, host.clone())?;
+    let session = ensure_brainstorm_ready(project_root, goal, host.clone(), input)?;
     let Some(session) = session else {
         return match host {
             HostKind::ClaudeCode | HostKind::OpenCode => {
@@ -317,10 +322,15 @@ pub fn run_goal(
     execute_proposal(project_root, proposal, goal, host, allow_remote_finish)
 }
 
-pub fn resume(project_root: &Path, host: HostKind, allow_remote_finish: bool) -> Result<String> {
+pub fn resume<T: TerminalInput>(
+    project_root: &Path,
+    host: HostKind,
+    allow_remote_finish: bool,
+    input: &mut T,
+) -> Result<String> {
     if let Some(session) = load_latest_brainstorm_session(project_root)? {
         if !matches!(session.verdict, BrainstormVerdict::Ready) {
-            return brainstorm(project_root, None, host, true);
+            return brainstorm(project_root, None, host, true, input);
         }
     }
 
@@ -360,8 +370,7 @@ pub fn status(project_root: &Path) -> Result<String> {
 }
 
 pub fn validate_spec(project_root: &Path) -> Result<String> {
-    let proposal = load_latest_proposal(project_root)?
-        .ok_or(ProposalError::NotFound)?;
+    let proposal = load_latest_proposal(project_root)?.ok_or(ProposalError::NotFound)?;
     let mut report = validate_proposal_spec(project_root, &proposal)?;
     let gate_issues = check_spec_completeness_gate(project_root, &proposal)?;
     report.issues.extend(gate_issues);
@@ -397,10 +406,11 @@ pub fn validate_spec(project_root: &Path) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
-fn ensure_brainstorm_ready(
+fn ensure_brainstorm_ready<T: TerminalInput>(
     project_root: &Path,
     goal: &str,
     host: HostKind,
+    input: &mut T,
 ) -> Result<Option<BrainstormSession>> {
     if let Some(session) = load_latest_brainstorm_session(project_root)? {
         if session.goal == goal {
@@ -409,7 +419,7 @@ fn ensure_brainstorm_ready(
             }
             return match host {
                 HostKind::Terminal => {
-                    let _ = brainstorm(project_root, None, host, true)?;
+                    let _ = brainstorm(project_root, None, host, true, input)?;
                     Ok(load_latest_brainstorm_session(project_root)?)
                 }
                 HostKind::ClaudeCode | HostKind::OpenCode => Ok(None),
@@ -419,11 +429,11 @@ fn ensure_brainstorm_ready(
 
     match host {
         HostKind::Terminal => {
-            let _ = brainstorm(project_root, Some(goal), host, false)?;
+            let _ = brainstorm(project_root, Some(goal), host, false, input)?;
             Ok(load_latest_brainstorm_session(project_root)?)
         }
         HostKind::ClaudeCode | HostKind::OpenCode => {
-            let _ = brainstorm(project_root, Some(goal), host, false)?;
+            let _ = brainstorm(project_root, Some(goal), host, false, input)?;
             Ok(None)
         }
     }
@@ -507,9 +517,11 @@ fn has_bound_spec_contract(project_root: &Path, proposal_id: &str) -> Result<boo
     Ok(report.valid)
 }
 
-fn run_terminal_brainstorm(project_root: &Path, session: &mut BrainstormSession) -> Result<()> {
-    let mut rl = DefaultEditor::new()?;
-
+fn run_terminal_brainstorm<T: TerminalInput>(
+    project_root: &Path,
+    session: &mut BrainstormSession,
+    input: &mut T,
+) -> Result<()> {
     while let Some(question) = next_brainstorm_question(session) {
         // Emit structured event for programmatic consumers
         append_event(
@@ -528,8 +540,7 @@ fn run_terminal_brainstorm(project_root: &Path, session: &mut BrainstormSession)
         eprintln!("\n[Zero_Nine Brainstorming] {}", question.question);
         eprintln!("Why this matters: {}", question.rationale);
 
-        let answer = rl.readline("> ")?;
-        rl.add_history_entry(&answer)?;
+        let answer = input.readline("> ")?;
         let verdict = answer_brainstorm_question(session, &question.id, &answer)?;
         save_brainstorm_session(project_root, session)?;
         append_event(
@@ -1116,6 +1127,25 @@ fn execute_proposal(
         if let Err(_msg) = policy_engine.enforce_merge_safety(true, true) {
             let event = SafetyEvent::merge_blocked("proposal", &proposal.id, true, true);
             persist_safety_event(project_root, &event)?;
+        }
+
+        // T2.1: Auto-persist qualifying distilled skills after successful run
+        if let Ok(distiller) = zn_evolve::distiller::create_default_distiller(project_root) {
+            let skill_manager = zn_spec::skill_manager::create_default_manager(project_root);
+            match distiller.persist_all_qualifying_skills(&skill_manager) {
+                Ok(count) if count > 0 => {
+                    info!("T2.1: Persisted {} distilled skill(s) to disk", count);
+                    append_event(
+                        project_root,
+                        RuntimeEvent::new(
+                            "evolution.skills_persisted".to_string(),
+                            Some(json!({"skills_persisted": count})),
+                        ),
+                    )?;
+                }
+                Err(e) => info!("Skill persistence skipped: {}", e),
+                _ => {}
+            }
         }
 
         append_event(

@@ -5,8 +5,18 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use zn_loop::TerminalInput;
 use zn_types::{HostKind, ZeroNineSdkConfig, ZeroNineStatusResponse};
+
+/// No-op terminal input — used when the host is not Terminal (no readline needed).
+pub struct NoopInput;
+
+impl TerminalInput for NoopInput {
+    fn readline(&mut self, _prompt: &str) -> Result<String> {
+        Err(anyhow!("NoopInput: readline not available — use a TerminalInput implementation for HostKind::Terminal"))
+    }
+}
 
 /// Unified entry point for all Zero_Nine operations.
 pub struct ZeroNine {
@@ -34,26 +44,80 @@ impl ZeroNine {
     }
 
     /// Start or resume a brainstorming session.
-    pub fn brainstorm(&self, goal: Option<&str>, resume: bool) -> Result<String> {
-        zn_loop::brainstorm(self.project_root(), goal, self.config.host.clone(), resume)
+    pub fn brainstorm<T: TerminalInput>(
+        &self,
+        goal: Option<&str>,
+        resume: bool,
+        input: &mut T,
+    ) -> Result<String> {
+        zn_loop::brainstorm(
+            self.project_root(),
+            goal,
+            self.config.host.clone(),
+            resume,
+            input,
+        )
+    }
+
+    /// Brainstorming for non-terminal hosts (no input needed).
+    pub fn brainstorm_headless(&self, goal: Option<&str>, resume: bool) -> Result<String> {
+        zn_loop::brainstorm(
+            self.project_root(),
+            goal,
+            self.config.host.clone(),
+            resume,
+            &mut NoopInput,
+        )
     }
 
     /// Execute a goal through the full orchestration loop.
-    pub fn run_goal(&self, goal: &str, allow_remote_finish: bool) -> Result<String> {
+    pub fn run_goal<T: TerminalInput>(
+        &self,
+        goal: &str,
+        allow_remote_finish: bool,
+        input: &mut T,
+    ) -> Result<String> {
         zn_loop::run_goal(
             self.project_root(),
             goal,
             self.config.host.clone(),
             allow_remote_finish,
+            input,
+        )
+    }
+
+    /// Run goal for non-terminal hosts (no input needed).
+    pub fn run_goal_headless(&self, goal: &str, allow_remote_finish: bool) -> Result<String> {
+        zn_loop::run_goal(
+            self.project_root(),
+            goal,
+            self.config.host.clone(),
+            allow_remote_finish,
+            &mut NoopInput,
         )
     }
 
     /// Resume an interrupted workflow.
-    pub fn resume(&self, allow_remote_finish: bool) -> Result<String> {
+    pub fn resume<T: TerminalInput>(
+        &self,
+        allow_remote_finish: bool,
+        input: &mut T,
+    ) -> Result<String> {
         zn_loop::resume(
             self.project_root(),
             self.config.host.clone(),
             allow_remote_finish,
+            input,
+        )
+    }
+
+    /// Resume for non-terminal hosts (no input needed).
+    pub fn resume_headless(&self, allow_remote_finish: bool) -> Result<String> {
+        zn_loop::resume(
+            self.project_root(),
+            self.config.host.clone(),
+            allow_remote_finish,
+            &mut NoopInput,
         )
     }
 

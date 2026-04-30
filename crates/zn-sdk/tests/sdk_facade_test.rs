@@ -4,7 +4,7 @@
 use chrono::Utc;
 use std::fs;
 use tempfile::TempDir;
-use zn_sdk::{from_project, ZeroNine};
+use zn_sdk::{from_project, NoopInput, ZeroNine};
 use zn_types::{BrainstormSession, BrainstormVerdict, HostKind};
 
 fn sdk(dir: &TempDir, host: HostKind) -> ZeroNine {
@@ -83,7 +83,7 @@ fn test_sdk_run_goal() {
     sdk.init().expect("init should succeed");
     seed_ready_session(&dir, "create a hello world script", HostKind::Terminal);
 
-    sdk.run_goal("create a hello world script", false)
+    sdk.run_goal_headless("create a hello world script", false)
         .expect("run_goal should succeed");
 
     let proposals = dir.path().join(".zero_nine/proposals");
@@ -103,10 +103,10 @@ fn test_sdk_resume() {
 
     sdk.init().expect("init should succeed");
     seed_ready_session(&dir, "simple task", HostKind::Terminal);
-    sdk.run_goal("simple task", false)
+    sdk.run_goal_headless("simple task", false)
         .expect("run should succeed");
 
-    let result = sdk.resume(false);
+    let result = sdk.resume_headless(false);
     assert!(result.is_ok(), "resume should succeed: {:?}", result);
 }
 
@@ -139,7 +139,7 @@ fn test_sdk_validate_spec_after_run() {
 
     sdk.init().expect("init should succeed");
     seed_ready_session(&dir, "write documentation", HostKind::Terminal);
-    sdk.run_goal("write documentation", false)
+    sdk.run_goal_headless("write documentation", false)
         .expect("run should succeed");
 
     let result = sdk.validate_spec();

@@ -3056,6 +3056,7 @@ dependencies = [
  "crossterm",
  "predicates",
  "ratatui",
+ "rustyline",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3080,6 +3081,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "zn-spec",
  "zn-types",
 ]
 
@@ -3122,7 +3124,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "rustyline",
  "serde",
  "serde_json",
  "tracing",
