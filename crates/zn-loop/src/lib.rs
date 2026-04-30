@@ -829,6 +829,8 @@ fn execute_proposal(
     }
 
     // M5: Global budget check before entering execution loop
+    let mut integration_engine = IntegrationEngine::new(project_root).ok();
+
     loop {
         let elapsed = (Utc::now() - loop_start).num_seconds() as u64;
         if state.iteration >= max_total_iterations {
@@ -847,7 +849,7 @@ fn execute_proposal(
         }
 
         // IntegrationEngine gate: check before scheduling next batch
-        if let Ok(mut engine) = IntegrationEngine::new(project_root) {
+        if let Some(ref mut engine) = integration_engine {
             let decision = engine.get_integrated_decision();
             if decision.should_escalate {
                 halt_reason = Some(format!(
@@ -1180,7 +1182,7 @@ fn execute_proposal(
             }
 
             // IntegrationEngine: record execution into all three subsystems
-            if let Ok(mut engine) = IntegrationEngine::new(project_root) {
+            if let Some(ref mut engine) = integration_engine {
                 if let Err(e) = engine.record_execution(
                     &report.task_id,
                     report.success,

@@ -14,7 +14,6 @@ use zn_types::SkillVersion;
 /// Performance record for a specific skill version
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillVersionRecord {
-    pub skill_name: String,
     pub version: SkillVersion,
     pub content_hash: String,
     /// Number of times this version was used
@@ -64,12 +63,10 @@ impl SkillRegistry {
     }
 
     fn load(&mut self) -> Result<()> {
-        if !self.registry_file.exists() {
-            return Ok(());
-        }
-        let content = fs::read_to_string(&self.registry_file).with_context(|| {
-            format!("Failed to read registry: {}", self.registry_file.display())
-        })?;
+        let content = match fs::read_to_string(&self.registry_file) {
+            Ok(s) => s,
+            Err(_) => return Ok(()),
+        };
         self.data = serde_json::from_str(&content).with_context(|| {
             format!("Failed to parse registry: {}", self.registry_file.display())
         })?;
@@ -104,7 +101,6 @@ impl SkillRegistry {
         }
 
         let record = SkillVersionRecord {
-            skill_name: skill_name.to_string(),
             version,
             content_hash: content_hash.to_string(),
             usage_count: 0,

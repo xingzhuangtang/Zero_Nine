@@ -17,6 +17,14 @@ use zn_types::HostKind;
 
 mod tui_dashboard;
 
+fn yn(b: bool) -> &'static str {
+    if b {
+        "Yes"
+    } else {
+        "No"
+    }
+}
+
 /// Rustyline-backed terminal input — implements TerminalInput for zn-loop.
 struct RustylineInput {
     editor: DefaultEditor,
@@ -1819,38 +1827,14 @@ fn main() -> Result<()> {
                         zn_evolve::integration_engine::IntegrationEngine::new(&project_root)
                             .context("Failed to initialize IntegrationEngine")?;
 
-                    // Seed the evolve directory if it doesn't exist
-                    let evolve_dir = project_root.join(".zero_nine/evolve");
-                    if !evolve_dir.exists() {
-                        std::fs::create_dir_all(&evolve_dir)?;
-                    }
-
                     let decision = engine.get_integrated_decision();
                     println!("# Integration Engine — Integrated Decision\n");
-                    println!(
-                        "**Continue Execution**: {}",
-                        if decision.should_continue {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
-                    );
+                    println!("**Continue Execution**: {}", yn(decision.should_continue));
                     println!(
                         "**Change Hypothesis**: {}",
-                        if decision.should_change_hypothesis {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
+                        yn(decision.should_change_hypothesis)
                     );
-                    println!(
-                        "**Escalate**: {}",
-                        if decision.should_escalate {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
-                    );
+                    println!("**Escalate**: {}", yn(decision.should_escalate));
                     println!(
                         "**Recommended Difficulty**: {:.2}",
                         decision.recommended_difficulty
@@ -1928,27 +1912,15 @@ fn main() -> Result<()> {
                     println!("\n## Integrated Decision");
                     println!(
                         "- **Continue**: {}",
-                        if snapshot.integrated_decision.should_continue {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
+                        yn(snapshot.integrated_decision.should_continue)
                     );
                     println!(
                         "- **Change Hypothesis**: {}",
-                        if snapshot.integrated_decision.should_change_hypothesis {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
+                        yn(snapshot.integrated_decision.should_change_hypothesis)
                     );
                     println!(
                         "- **Escalate**: {}",
-                        if snapshot.integrated_decision.should_escalate {
-                            "Yes"
-                        } else {
-                            "No"
-                        }
+                        yn(snapshot.integrated_decision.should_escalate)
                     );
                     println!(
                         "- **Action**: {:?}",
