@@ -40,6 +40,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use zn_types::SkillError;
 
 /// Schema version for SKILL.md format
 pub const SKILL_SCHEMA_VERSION: &str = "1.0.0";
@@ -96,7 +97,7 @@ impl SkillFile {
     pub fn parse(content: &str) -> Result<Self> {
         // Find the frontmatter boundaries
         if !content.starts_with("---") {
-            anyhow::bail!("Skill file must start with YAML frontmatter delimiter '---'");
+            return Err(SkillError::MissingFrontmatter.into());
         }
 
         let mut lines = content.lines();

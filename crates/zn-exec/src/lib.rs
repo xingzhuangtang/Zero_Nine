@@ -28,6 +28,7 @@ use zn_types::{
     VerificationVerdict, VerdictStatus,
     WorkspacePreparationResult, WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy,
     WorktreePlan, CompensationAction, CompensationType,
+    BrainstormError, ExecutionError,
 };
 
 // Bridge client module for gRPC agent communication
@@ -176,14 +177,16 @@ pub fn answer_brainstorm_question(
 ) -> Result<BrainstormVerdict> {
     let trimmed = answer.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("brainstorm answer cannot be empty"));
+        return Err(BrainstormError::EmptyInput.into());
     }
 
     let question = session
         .questions
         .iter_mut()
         .find(|item| item.id == question_id)
-        .ok_or_else(|| anyhow!("unknown brainstorm question: {}", question_id))?;
+        .ok_or_else(|| BrainstormError::UnknownQuestion {
+            question_id: question_id.to_string(),
+        })?;
     question.answered = true;
 
     if let Some(existing) = session
@@ -1387,7 +1390,7 @@ pub fn prepare_workspace(project_root: &Path, plan: &ExecutionPlan) -> Result<Wo
             let worktree = plan
                 .worktree_plan
                 .as_ref()
-                .ok_or_else(|| anyhow!("missing worktree plan for git worktree strategy"))?;
+                .ok_or(ExecutionError::MissingWorktreePlan)?;
 
             if !git_has_head(&repo_root)? {
                 let now = Utc::now();
@@ -1636,7 +1639,7 @@ pub fn finish_branch(project_root: &Path, request: &BranchFinishRequest) -> Resu
     }
 
     if request.verify_clean && !git_is_clean(&repo_root)? {
-        return Err(anyhow!("repository has uncommitted changes; aborting finish-branch"));
+        return Err(ExecutionError::UncommittedChanges.into());
     }
 
     match request.action {
@@ -2410,7 +2413,7 @@ fn git_preferred_remote(repo_root: &Path) -> Result<String> {
     remotes
         .first()
         .map(|name| (*name).to_string())
-        .ok_or_else(|| anyhow!("no git remote configured for pull-request automation"))
+        .ok_or_else(|| anyhow::Error::from(ExecutionError::NoGitRemote))
 }
 
 fn git_toplevel(project_root: &Path) -> Result<PathBuf> {
@@ -3535,7 +3538,7 @@ pub fn execute_plan_via_bridge(
     let bridge_addr = plan
         .bridge_address
         .as_ref()
-        .ok_or_else(|| anyhow!("bridge_address required for bridge execution path"))?
+        .ok_or(ExecutionError::BridgeAddressRequired)?
         .parse::<std::net::SocketAddr>()
         .context("invalid bridge_address format")?;
 

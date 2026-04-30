@@ -1,0 +1,31 @@
+# Zero_Nine Rust formatting configuration
+# Enforces consistent code style across all crates
+
+edition = "2021"
+
+# Line width
+max_width = 100
+comment_width = 100
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+
+# Trailing commas
+trailing_comma = "Vertical"
+trailing_semicolon = true
+
+# Blank lines
+blank_lines_upper_bound = 2
+blank_lines_lower_bound = 0
+
+# Function signatures
+fn_params_layout = "Tall"
+brace_style = "SameLineWhere"
+
+# Miscellaneous
+use_field_init_shorthand = true
+use_try_shorthand = true
+format_strings = false
+format_macro_matchers = true

@@ -6,6 +6,7 @@
 //! - Memory action execution (add, replace, remove)
 
 use anyhow::{Context, Result};
+use zn_types::MemoryToolError;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -261,7 +262,10 @@ updated: YYYY-MM-DD
             fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))?;
 
         if !current.contains(old_text) {
-            anyhow::bail!("Old text not found in {}", target);
+            return Err(MemoryToolError::OldTextNotFound {
+                target: target.to_string(),
+            }
+            .into());
         }
 
         current = current.replace(old_text, new_text);
@@ -278,7 +282,10 @@ updated: YYYY-MM-DD
             fs::read_to_string(path).with_context(|| format!("Failed to read {}", target))?;
 
         if !current.contains(old_text) {
-            anyhow::bail!("Text to remove not found in {}", target);
+            return Err(MemoryToolError::RemoveTargetNotFound {
+                target: target.to_string(),
+            }
+            .into());
         }
 
         current = current.replace(old_text, "");

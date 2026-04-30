@@ -30,6 +30,7 @@ use zn_types::{
     StateTransition, TaskStatus,
 };
 use zn_types::{CompensationAction, CompensationType, EvolutionCandidate, EvolutionKind};
+use zn_types::{BrainstormError, ProposalError};
 
 pub fn initialize_project(project_root: &Path, host: HostKind) -> Result<()> {
     ensure_layout(project_root)?;
@@ -56,10 +57,9 @@ pub fn brainstorm(
 
     let mut session = if resume {
         load_latest_brainstorm_session(project_root)?
-            .ok_or_else(|| anyhow!("no brainstorm session found to resume"))?
+            .ok_or(BrainstormError::NoSessionToResume)?
     } else {
-        let goal =
-            goal.ok_or_else(|| anyhow!("goal is required when starting a new brainstorm session"))?;
+        let goal = goal.ok_or(BrainstormError::GoalRequired)?;
         let session = start_brainstorm(goal, host.clone());
         append_event(
             project_root,
@@ -99,7 +99,7 @@ fn brainstorm_host_turn_internal(
 
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("brainstorm input cannot be empty"));
+        return Err(BrainstormError::EmptyInput.into());
     }
 
     if let Some(mut session) = load_latest_brainstorm_session(project_root)? {
@@ -361,7 +361,7 @@ pub fn status(project_root: &Path) -> Result<String> {
 
 pub fn validate_spec(project_root: &Path) -> Result<String> {
     let proposal = load_latest_proposal(project_root)?
-        .ok_or_else(|| anyhow!("no proposal found to validate"))?;
+        .ok_or(ProposalError::NotFound)?;
     let mut report = validate_proposal_spec(project_root, &proposal)?;
     let gate_issues = check_spec_completeness_gate(project_root, &proposal)?;
     report.issues.extend(gate_issues);
@@ -447,24 +447,24 @@ fn ensure_spec_execution_ready(
     proposal: &Proposal,
 ) -> Result<()> {
     if !matches!(session.verdict, BrainstormVerdict::Ready) {
-        return Err(anyhow!(
-            "cannot execute proposal {} because the brainstorm session {} is not Ready",
-            proposal.id,
-            session.id
-        ));
+        return Err(ProposalError::BrainstormNotReady {
+            proposal_id: proposal.id.clone(),
+            session_id: session.id.clone(),
+        }
+        .into());
     }
     if session.goal != proposal.goal {
-        return Err(anyhow!(
-            "cannot execute proposal {} because it does not match the latest Ready brainstorm goal",
-            proposal.id
-        ));
+        return Err(ProposalError::GoalMismatch {
+            proposal_id: proposal.id.clone(),
+        }
+        .into());
     }
     if !matches!(proposal.status, ProposalStatus::Ready) {
-        return Err(anyhow!(
-            "cannot execute proposal {} because its status is {:?} instead of Ready",
-            proposal.id,
-            proposal.status
-        ));
+        return Err(ProposalError::NotReadyStatus {
+            proposal_id: proposal.id.clone(),
+            status: format!("{:?}", proposal.status),
+        }
+        .into());
     }
     let mut validation_report = validate_proposal_spec(project_root, proposal)?;
     let gate_issues = check_spec_completeness_gate(project_root, proposal)?;
@@ -476,12 +476,15 @@ fn ensure_spec_execution_ready(
         .any(|i| matches!(i.severity, SpecValidationSeverity::Error));
     if !validation_report.valid {
         write_spec_validation_report(project_root, proposal)?;
-        return Err(anyhow!(
-            "cannot execute proposal {} because the bound OpenSpec contract failed validation with {} issue(s) (including {} completeness gate issue(s))",
-            proposal.id,
-            validation_report.issues.len(),
-            gate_count
-        ));
+        return Err(ProposalError::SpecValidationFailed {
+            proposal_id: proposal.id.clone(),
+            reason: format!(
+                "{} issue(s) including {} completeness gate issue(s)",
+                validation_report.issues.len(),
+                gate_count
+            ),
+        }
+        .into());
     }
     Ok(())
 }
@@ -508,8 +511,22 @@ fn run_terminal_brainstorm(project_root: &Path, session: &mut BrainstormSession)
     let mut rl = DefaultEditor::new()?;
 
     while let Some(question) = next_brainstorm_question(session) {
-        println!("\n[Zero_Nine Brainstorming] {}", question.question);
-        println!("Why this matters: {}", question.rationale);
+        // Emit structured event for programmatic consumers
+        append_event(
+            project_root,
+            RuntimeEvent::new(
+                "brainstorm.question_presented".to_string(),
+                Some(json!({
+                    "session_id": session.id,
+                    "question_id": question.id,
+                    "question": question.question,
+                    "rationale": question.rationale,
+                })),
+            ),
+        )?;
+        // Terminal-mode user interaction (stderr to separate from structured output)
+        eprintln!("\n[Zero_Nine Brainstorming] {}", question.question);
+        eprintln!("Why this matters: {}", question.rationale);
 
         let answer = rl.readline("> ")?;
         rl.add_history_entry(&answer)?;
@@ -576,11 +593,11 @@ fn execute_proposal(
     allow_remote_finish: bool,
 ) -> Result<String> {
     if !matches!(proposal.status, ProposalStatus::Ready) {
-        return Err(anyhow!(
-            "proposal {} must be Ready before execution can start; current status is {:?}",
-            proposal.id,
-            proposal.status
-        ));
+        return Err(ProposalError::NotReadyStatus {
+            proposal_id: proposal.id.clone(),
+            status: format!("{:?}", proposal.status),
+        }
+        .into());
     }
 
     let manifest = load_manifest(project_root)?.unwrap_or_default();

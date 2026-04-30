@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use zn_types::SkillError;
 
 use crate::skill_format::{SkillFile, SkillSummary};
 
@@ -67,7 +68,7 @@ platforms: [claude-code, opencode]
             .with_context(|| format!("Failed to read skill file: {}", skill_file.display()))?;
 
         if !content.contains(old_string) {
-            anyhow::bail!("Old string not found in skill file");
+            return Err(SkillError::PatchTargetNotFound.into());
         }
 
         let patched = content.replace(old_string, new_string);
@@ -109,7 +110,7 @@ platforms: [claude-code, opencode]
     pub fn delete(&self, name: &str) -> Result<()> {
         let skill_dir = self.skills_dir.join(name);
         if !skill_dir.exists() {
-            anyhow::bail!("Skill '{}' not found", name);
+            return Err(SkillError::NotFound { name: name.to_string() }.into());
         }
         fs::remove_dir_all(&skill_dir).with_context(|| {
             format!("Failed to delete skill directory: {}", skill_dir.display())
@@ -178,7 +179,7 @@ platforms: [claude-code, opencode]
     fn get_skill_file_path(&self, name: &str) -> Result<PathBuf> {
         let skill_file = self.skills_dir.join(name).join("SKILL.md");
         if !skill_file.exists() {
-            anyhow::bail!("Skill '{}' not found", name);
+            return Err(SkillError::NotFound { name: name.to_string() }.into());
         }
         Ok(skill_file)
     }
