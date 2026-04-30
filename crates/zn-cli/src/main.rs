@@ -159,6 +159,65 @@ enum Commands {
         #[command(subcommand)]
         command: EvolveCommands,
     },
+    /// Skill management — list, search, create, validate
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
+}
+
+/// Skill management commands
+#[derive(Subcommand, Debug)]
+enum SkillsCommands {
+    /// List all available skills
+    List {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Search skills by tags or keywords
+    Search {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Search query (tags or keywords)
+        query: String,
+    },
+    /// Create a new skill
+    Create {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Skill name (kebab-case)
+        name: String,
+        /// Skill category (e.g., "dev", "test", "review")
+        #[arg(long, default_value = "dev")]
+        category: String,
+        /// Short description
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// View a skill's content
+    View {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Skill name
+        name: String,
+    },
+    /// Validate a skill file
+    Validate {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Skill name
+        name: String,
+    },
+    /// Delete a skill
+    Delete {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Skill name
+        name: String,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Evolution engine commands
@@ -1910,6 +1969,120 @@ fn main() -> Result<()> {
                     println!(
                         "All reward, curriculum, and belief state files have been reinitialized."
                     );
+                }
+            }
+        }
+        Commands::Skills {
+            command: skills_command,
+        } => {
+            let project_root = match &skills_command {
+                SkillsCommands::List { project }
+                | SkillsCommands::Search { project, .. }
+                | SkillsCommands::Create { project, .. }
+                | SkillsCommands::View { project, .. }
+                | SkillsCommands::Validate { project, .. }
+                | SkillsCommands::Delete { project, .. } => project,
+            };
+            let project_root = project_root
+                .canonicalize()
+                .with_context(|| format!("project root not found: {}", project_root.display()))?;
+
+            let manager = zn_spec::skill_manager::create_default_manager(&project_root);
+
+            match skills_command {
+                SkillsCommands::List { .. } => {
+                    let skills = manager.list().context("Failed to list skills")?;
+                    if skills.is_empty() {
+                        println!("No skills found in this project.");
+                    } else {
+                        println!("# Skills — {}\n", skills.len());
+                        for (i, skill) in skills.iter().enumerate() {
+                            println!("{}. **{}** — {}", i + 1, skill.name, skill.description);
+                            println!(
+                                "   Category: {} | Version: {} | Tags: {}",
+                                skill.category,
+                                skill.version,
+                                skill.tags.join(", ")
+                            );
+                        }
+                    }
+                }
+                SkillsCommands::Search { query, .. } => {
+                    let skills = manager.list().context("Failed to list skills")?;
+                    let query_lower = query.to_lowercase();
+                    let matched: Vec<_> = skills
+                        .into_iter()
+                        .filter(|s| {
+                            s.name.to_lowercase().contains(&query_lower)
+                                || s.description.to_lowercase().contains(&query_lower)
+                                || s.tags
+                                    .iter()
+                                    .any(|t| t.to_lowercase().contains(&query_lower))
+                        })
+                        .collect();
+                    if matched.is_empty() {
+                        println!("No skills matched '{}'.", query);
+                    } else {
+                        println!("# Skills matching '{}'\n", query);
+                        for (i, skill) in matched.iter().enumerate() {
+                            println!("{}. **{}** — {}", i + 1, skill.name, skill.description);
+                        }
+                    }
+                }
+                SkillsCommands::Create {
+                    name,
+                    category,
+                    description,
+                    ..
+                } => {
+                    let description = if description.is_empty() {
+                        format!("Skill for {}", name)
+                    } else {
+                        description
+                    };
+                    let path = manager
+                        .create(&name, "", &category, &description, "0.1.0")
+                        .context("Failed to create skill")?;
+                    println!("Created skill at {}", path.display());
+                }
+                SkillsCommands::View { name, .. } => {
+                    let skill = manager
+                        .view(&name)
+                        .context(format!("Skill '{}' not found", name))?;
+                    println!("# {}\n", skill.frontmatter.name);
+                    println!("**Description**: {}", skill.frontmatter.description);
+                    println!(
+                        "**Category**: {} | **Version**: {}",
+                        skill.frontmatter.category, skill.frontmatter.version
+                    );
+                    if !skill.frontmatter.platforms.is_empty() {
+                        println!("**Platforms**: {}", skill.frontmatter.platforms.join(", "));
+                    }
+                    println!("\n---\n");
+                    println!("{}", skill.content);
+                }
+                SkillsCommands::Validate { name, .. } => {
+                    let issues = manager
+                        .validate(&name)
+                        .context(format!("Skill '{}' not found", name))?;
+                    if issues.is_empty() {
+                        println!("Skill '{}' is valid.", name);
+                    } else {
+                        println!("Skill '{}' has {} issue(s):\n", name, issues.len());
+                        for issue in &issues {
+                            println!("- {}", issue.message);
+                        }
+                    }
+                }
+                SkillsCommands::Delete { name, force, .. } => {
+                    if !force {
+                        println!("Use --force to delete skill '{}'.", name);
+                        return Ok(());
+                    }
+                    manager
+                        .delete(&name)
+                        .context(format!("Failed to delete skill '{}'", name))?;
+                    println!("Deleted skill '{}'.", name);
                 }
             }
         }
