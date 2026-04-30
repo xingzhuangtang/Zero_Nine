@@ -1,5 +1,8 @@
 use chrono::Utc;
-use zn_types::{EvidenceStatus, EvolutionCandidate, EvolutionKind, ExecutionOutcome, ExecutionReport, SkillEvaluation, VerdictStatus};
+use zn_types::{
+    EvidenceStatus, EvolutionCandidate, EvolutionKind, ExecutionOutcome, ExecutionReport,
+    SkillEvaluation, VerdictStatus,
+};
 
 // Re-export scorer module
 pub mod scorer;
@@ -9,9 +12,15 @@ pub use scorer::SkillScorer;
 pub mod distiller;
 pub use distiller::SkillDistiller;
 
+// Re-export skill version registry module
+pub mod skill_registry;
+pub use skill_registry::{
+    content_hash, RegistrySummary, SkillRegistry, SkillVersionRecord, VersionComparison,
+};
+
 // Re-export reward model module
 pub mod reward;
-pub use reward::{RewardModel, RewardBreakdown};
+pub use reward::{RewardBreakdown, RewardModel};
 
 // Re-export curriculum module
 pub mod curriculum;
@@ -19,17 +28,19 @@ pub use curriculum::{CurriculumManager, CurriculumStats, OptimalTaskRecommendati
 
 // Re-export belief module
 pub mod belief;
-pub use belief::{BeliefTracker, BeliefDecision, RecommendedAction, update_belief_from_report};
+pub use belief::{update_belief_from_report, BeliefDecision, BeliefTracker, RecommendedAction};
 
 // Integration engine - 三系统联动
 pub mod integration_engine;
-pub use integration_engine::{IntegrationEngine, IntegratedDecision, EngineSnapshot, DecisionReasoning};
+pub use integration_engine::{
+    DecisionReasoning, EngineSnapshot, IntegratedDecision, IntegrationEngine,
+};
 
 // AI Client - 外部 AI API 客户端
 pub mod ai_client;
 pub use ai_client::{
-    AIClient, AIClientConfig, AIProvider, AIRequest, AIResponse, AIMessage, MessageRole, TokenUsage,
-    UserFeedbackCollector, UserFeedbackEntry, FeedbackStats, create_feedback_collector,
+    create_feedback_collector, AIClient, AIClientConfig, AIMessage, AIProvider, AIRequest,
+    AIResponse, FeedbackStats, MessageRole, TokenUsage, UserFeedbackCollector, UserFeedbackEntry,
 };
 
 pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
@@ -59,7 +70,10 @@ pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
             if report.success
                 && review_status == VerdictStatus::Passed
                 && verification_status == VerdictStatus::Passed
-                && missing_required == 0 => 0.97,
+                && missing_required == 0 =>
+        {
+            0.97
+        }
         ExecutionOutcome::Completed if report.success => 0.84,
         ExecutionOutcome::Completed => 0.61,
         ExecutionOutcome::RetryableFailure => 0.56,
@@ -142,10 +156,13 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
         })
     } else {
         // Confidence based on diagnostic richness
-        let has_failure_summary = report.failure_summary.as_ref().map_or(false, |s| !s.is_empty());
+        let has_failure_summary = report
+            .failure_summary
+            .as_ref()
+            .map_or(false, |s| !s.is_empty());
         let has_agent_runs = !report.agent_runs.is_empty();
-        let diagnostic_bonus = if has_failure_summary { 0.10 } else { 0.0 }
-            + if has_agent_runs { 0.05 } else { 0.0 };
+        let diagnostic_bonus =
+            if has_failure_summary { 0.10 } else { 0.0 } + if has_agent_runs { 0.05 } else { 0.0 };
         let confidence: f32 = (0.55f32 + diagnostic_bonus).min(0.85);
 
         Some(EvolutionCandidate {
@@ -187,7 +204,10 @@ pub struct RemediationGuidance {
 }
 
 /// Consume pending evolution candidates for a task and extract actionable guidance
-pub fn consume_candidates(project_root: &std::path::Path, task_id: &str) -> Option<RemediationGuidance> {
+pub fn consume_candidates(
+    project_root: &std::path::Path,
+    task_id: &str,
+) -> Option<RemediationGuidance> {
     use std::fs;
     let candidates_dir = project_root.join(".zero_nine/evolve/candidates");
     if !candidates_dir.exists() {

@@ -218,6 +218,13 @@ enum SkillsCommands {
         #[arg(long)]
         force: bool,
     },
+    /// Show version history for a skill
+    Versions {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Skill name
+        name: String,
+    },
 }
 
 /// Evolution engine commands
@@ -1981,7 +1988,8 @@ fn main() -> Result<()> {
                 | SkillsCommands::Create { project, .. }
                 | SkillsCommands::View { project, .. }
                 | SkillsCommands::Validate { project, .. }
-                | SkillsCommands::Delete { project, .. } => project,
+                | SkillsCommands::Delete { project, .. }
+                | SkillsCommands::Versions { project, .. } => project,
             };
             let project_root = project_root
                 .canonicalize()
@@ -2083,6 +2091,56 @@ fn main() -> Result<()> {
                         .delete(&name)
                         .context(format!("Failed to delete skill '{}'", name))?;
                     println!("Deleted skill '{}'.", name);
+                }
+                SkillsCommands::Versions { name, .. } => {
+                    let registry = zn_evolve::skill_registry::SkillRegistry::new(
+                        project_root.join(".zero_nine/evolve/skill_versions.json"),
+                    )
+                    .context("Failed to load skill version registry")?;
+
+                    let versions = registry.get_versions(&name);
+                    if versions.is_empty() {
+                        println!("No versions found for skill '{}'.", name);
+                    } else {
+                        println!("# Skill Versions: {}\n", name);
+                        for (i, rec) in versions.iter().enumerate() {
+                            let marker = if rec.active { "(active)" } else { "" };
+                            println!(
+                                "{}. **v{}** {} — {:.0}% success rate ({} uses)",
+                                i + 1,
+                                rec.version,
+                                marker,
+                                rec.success_rate() * 100.0,
+                                rec.usage_count
+                            );
+                            println!(
+                                "   Confidence: {:.2} | Created: {} | Path: {}",
+                                rec.avg_confidence, rec.created_at, rec.file_path
+                            );
+                        }
+
+                        if let Some(comparison) = registry.compare_versions(&name) {
+                            println!("\n## Version Comparison");
+                            println!(
+                                "- Active: v{} ({:.0}% success, {} uses)",
+                                comparison.active_version,
+                                comparison.active_success_rate * 100.0,
+                                comparison.active_usage
+                            );
+                            println!(
+                                "- Best: v{} ({:.0}% success, {} uses)",
+                                comparison.best_version,
+                                comparison.best_success_rate * 100.0,
+                                comparison.best_usage
+                            );
+                            if comparison.should_promote {
+                                println!(
+                                    "\n:zap: Recommend promoting v{} over v{}.",
+                                    comparison.best_version, comparison.active_version
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
