@@ -1763,10 +1763,16 @@ fn main() -> Result<()> {
         }
         Commands::Distill { project, scenario } => {
             use zn_evolve::distiller::create_default_distiller;
+            use zn_evolve::skill_registry::SkillRegistry;
             use zn_spec::skill_manager::create_default_manager as create_skill_manager;
 
             let mut distiller = create_default_distiller(&project)?;
             let skill_manager = create_skill_manager(&project);
+            let registry_file = project
+                .join(".zero_nine")
+                .join("evolve")
+                .join("skill_registry.json");
+            let mut registry = SkillRegistry::new(registry_file)?;
 
             // Simulate execution reports for the given scenario
             let reports = simulate_execution_reports(&scenario, 5)?;
@@ -1790,7 +1796,7 @@ fn main() -> Result<()> {
             }
 
             // Persist qualifying skills to disk
-            match distiller.persist_all_qualifying_skills(&skill_manager) {
+            match distiller.persist_all_qualifying_skills(&skill_manager, &mut registry) {
                 Ok(count) if count > 0 => {
                     println!(
                         "\nPersisted {} qualifying skill(s) to .zero_nine/evolve/skills/",

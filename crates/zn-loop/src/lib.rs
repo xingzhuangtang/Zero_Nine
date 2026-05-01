@@ -953,6 +953,23 @@ fn execute_proposal(
                             guidance.confidence,
                         );
                     }
+                    // T1.3: Auto-apply distilled skills that match the task
+                    if let Ok(distiller) =
+                        zn_evolve::distiller::create_default_distiller(project_root)
+                    {
+                        let matches = distiller.match_skills_for_task(&task.title);
+                        if !matches.is_empty() {
+                            for skill in &matches {
+                                let _ =
+                                    distiller.apply_skill_to_plan(&skill.bundle.name, &mut plan);
+                            }
+                            info!(
+                                "T1.3: Applied {} distilled skill(s) to task {}",
+                                matches.len(),
+                                task.id,
+                            );
+                        }
+                    }
                     plan
                 },
                 retry_count,
@@ -1297,19 +1314,25 @@ fn execute_proposal(
         // T2.1: Auto-persist qualifying distilled skills after successful run
         if let Ok(distiller) = zn_evolve::distiller::create_default_distiller(project_root) {
             let skill_manager = zn_spec::skill_manager::create_default_manager(project_root);
-            match distiller.persist_all_qualifying_skills(&skill_manager) {
-                Ok(count) if count > 0 => {
-                    info!("T2.1: Persisted {} distilled skill(s) to disk", count);
-                    append_event(
-                        project_root,
-                        RuntimeEvent::new(
-                            "evolution.skills_persisted".to_string(),
-                            Some(json!({"skills_persisted": count})),
-                        ),
-                    )?;
+            let registry_file = project_root
+                .join(".zero_nine")
+                .join("evolve")
+                .join("skill_registry.json");
+            if let Ok(mut registry) = zn_evolve::skill_registry::SkillRegistry::new(registry_file) {
+                match distiller.persist_all_qualifying_skills(&skill_manager, &mut registry) {
+                    Ok(count) if count > 0 => {
+                        info!("T2.1: Persisted {} distilled skill(s) to disk", count);
+                        append_event(
+                            project_root,
+                            RuntimeEvent::new(
+                                "evolution.skills_persisted".to_string(),
+                                Some(json!({"skills_persisted": count})),
+                            ),
+                        )?;
+                    }
+                    Err(e) => info!("Skill persistence skipped: {}", e),
+                    _ => {}
                 }
-                Err(e) => info!("Skill persistence skipped: {}", e),
-                _ => {}
             }
         }
 

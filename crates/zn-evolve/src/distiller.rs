@@ -14,10 +14,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use zn_types::governance::{FailureCategory, FailureClassification};
 use zn_types::{
     ActionRiskLevel, EvidenceStatus, ExecutionOutcome, ExecutionReport, SkillBundle, SkillVersion,
     VerdictStatus, WorkspaceStrategy,
 };
+
+use crate::skill_registry;
 
 /// Maximum patterns to keep per category
 const MAX_PATTERNS_PER_CATEGORY: usize = 50;
@@ -261,21 +264,21 @@ impl PatternExtractor {
             patterns.push(pattern);
         }
 
-        // Extract error recovery patterns from failures
-        if !report.success && report.outcome == ExecutionOutcome::RetryableFailure {
+        // Extract error recovery patterns from failures, classified by FailureCategory
+        if !report.success {
+            let (recovery_id, description, preconditions, success_rate) =
+                self.failure_recovery_info(report);
+
             let pattern = ExecutionPattern {
-                id: format!("recovery-{}", report.task_id),
+                id: recovery_id,
                 category: PatternCategory::ErrorRecovery,
-                description: format!(
-                    "Retryable failure recovery for: {}",
-                    report.failure_summary.as_deref().unwrap_or("unknown")
-                ),
+                description,
                 frequency: 1,
-                success_rate: 0.5,
+                success_rate,
                 avg_confidence: 0.6,
                 source_task_ids: vec![report.task_id.clone()],
                 evidence_keys: vec!["failure_summary".to_string()],
-                preconditions: vec!["Retryable condition detected".to_string()],
+                preconditions,
                 outcomes: vec![report
                     .failure_summary
                     .clone()
@@ -292,6 +295,60 @@ impl PatternExtractor {
         }
 
         patterns
+    }
+
+    /// Classify a failure report and produce a specific recovery pattern ID,
+    /// description, preconditions, and base success rate.
+    fn failure_recovery_info(
+        &self,
+        report: &ExecutionReport,
+    ) -> (String, String, Vec<String>, f32) {
+        if let Some(ref classification) = report.failure_classification {
+            let category_id = match classification.category {
+                FailureCategory::EnvironmentDrift => "environment-drift",
+                FailureCategory::ToolError => "tool-error",
+                FailureCategory::VerificationFailed => "verification-failed",
+                FailureCategory::PolicyBlocked => "policy-blocked",
+                FailureCategory::HumanRejected => "human-rejected",
+                FailureCategory::ResourceExhausted => "resource-exhausted",
+                FailureCategory::Timeout => "timeout",
+                FailureCategory::Unknown => "unknown",
+            };
+
+            let recovery_id = format!("recovery-{}", category_id);
+            let description = format!(
+                "Recovery from {}: {}",
+                category_id, classification.description
+            );
+            let mut preconditions = vec![classification.description.clone()];
+            if let Some(ref fix) = classification.suggested_fix {
+                preconditions.push(format!("Apply fix: {}", fix));
+            }
+            if classification.retry_recommended {
+                preconditions.push("Retry is safe and recommended".to_string());
+            }
+
+            let success_rate = match classification.severity {
+                zn_types::governance::FailureSeverity::Low => 0.7,
+                zn_types::governance::FailureSeverity::Medium => 0.5,
+                zn_types::governance::FailureSeverity::High => 0.3,
+                zn_types::governance::FailureSeverity::Critical => 0.15,
+            };
+
+            (recovery_id, description, preconditions, success_rate)
+        } else {
+            // No classification available — fall back to generic
+            let summary = report
+                .failure_summary
+                .as_deref()
+                .unwrap_or("unknown failure");
+            (
+                format!("recovery-{}", report.task_id),
+                format!("Generic failure recovery: {}", summary),
+                vec!["Retryable condition detected".to_string()],
+                0.5,
+            )
+        }
     }
 
     /// Merge a new pattern with existing ones or add it
@@ -760,11 +817,62 @@ impl SkillDistiller {
         Err(anyhow::anyhow!("Skill not found: {}", skill_id))
     }
 
-    /// Distill a skill into SKILL.md content using LLM.
+    /// Map a SkillBundle's category name to a SkillFrontmatter category string.
+    fn category_for_skill(&self, bundle: &zn_types::SkillBundle) -> String {
+        // Derive from the first applicable scenario, matching persist_skill_to_disk logic
+        match bundle.applicable_scenarios.first() {
+            Some(s) => {
+                let word = s
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("evolution")
+                    .to_lowercase();
+                match word.as_str() {
+                    "brainstorm" | "brainstorming" => "brainstorming",
+                    "spec" | "design" | "proposal" => "spec",
+                    "exec" | "implement" | "task" | "test" | "tdd" => "execution",
+                    "verify" | "validation" | "review" => "verification",
+                    _ => "evolution",
+                }
+                .to_string()
+            }
+            None => "evolution".to_string(),
+        }
+    }
+
+    /// Map a SkillBundle to a Zero_Nine layer string.
+    fn layer_for_skill(&self, bundle: &zn_types::SkillBundle) -> String {
+        match bundle.applicable_scenarios.first() {
+            Some(s) => {
+                let word = s
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("evolution")
+                    .to_lowercase();
+                match word.as_str() {
+                    "brainstorm" | "brainstorming" => "brainstorming",
+                    "spec" | "design" | "proposal" => "spec",
+                    "exec" | "implement" | "task" | "test" | "tdd" => "execution",
+                    "verify" | "validation" | "review" => "verification",
+                    _ => "evolution",
+                }
+                .to_string()
+            }
+            None => "evolution".to_string(),
+        }
+    }
+
+    /// Distill a skill into SKILL.md content with valid YAML frontmatter.
     ///
-    /// Takes the distilled skill's metadata and generates a natural-language
-    /// SKILL.md file following the Zero_Nine skill format.
+    /// Produces a SKILL.md file that can be parsed by `SkillFile::parse()`.
     pub fn distill_skill_markdown(&self, skill: &DistilledSkill) -> Result<String> {
+        let version_str = format!(
+            "{}.{}.{}",
+            skill.bundle.version.major, skill.bundle.version.minor, skill.bundle.version.patch
+        );
+
+        let category = self.category_for_skill(&skill.bundle);
+        let layer = self.layer_for_skill(&skill.bundle);
         let scenario_list = skill
             .bundle
             .applicable_scenarios
@@ -795,11 +903,24 @@ impl SkillDistiller {
             .join("\n");
 
         let markdown = format!(
-            r#"# {name}
+            r#"---
+name: {name}
+description: {description}
+version: {version}
+category: {category}
+platforms: [claude-code, opencode]
+metadata:
+  zero-nine:
+    layer: {layer}
+---
 
-**Category**: {category} | **Confidence**: {confidence:.2} | **Success Rate**: {success_rate:.0}% | **Usage Count**: {usage_count}
+# {name}
 
 ## When to Use
+
+{description}
+
+### Applicable Scenarios
 
 {scenarios}
 
@@ -837,10 +958,10 @@ Avoid the following:
 {risks}
 "#,
             name = skill.bundle.name,
-            category = skill.bundle.name.split('-').next().unwrap_or("general"),
-            confidence = skill.confidence_score,
-            success_rate = skill.bundle.success_rate * 100.0,
-            usage_count = skill.bundle.usage_count,
+            description = skill.bundle.description,
+            version = version_str,
+            category = category,
+            layer = layer,
             scenarios = scenario_list,
             preconditions = skill.bundle.preconditions.join(", "),
             skill_chain = skill
@@ -860,12 +981,13 @@ Avoid the following:
         Ok(markdown)
     }
 
-    /// Persist a distilled skill as SKILL.md via the SkillManager.
+    /// Persist a distilled skill as SKILL.md via the SkillManager and register its version.
     ///
     /// Only persists skills that meet the 3-10 sample rule (frequency >= 3, success_rate > 0.8).
     pub fn persist_skill_to_disk(
         &self,
         skill_manager: &zn_spec::skill_manager::SkillManager,
+        registry: &mut skill_registry::SkillRegistry,
         skill: &DistilledSkill,
     ) -> Result<()> {
         let markdown = self.distill_skill_markdown(skill)?;
@@ -891,6 +1013,16 @@ Avoid the following:
             &version_str,
         )?;
 
+        // Register version in the skill version registry
+        let file_path = format!(".zero_nine/evolve/skills/{}/SKILL.md", skill.bundle.name);
+        registry.register_version(
+            &skill.bundle.name,
+            skill.bundle.version.clone(),
+            &skill_registry::content_hash(&markdown),
+            skill.confidence_score,
+            &file_path,
+        )?;
+
         Ok(())
     }
 
@@ -898,11 +1030,15 @@ Avoid the following:
     pub fn persist_all_qualifying_skills(
         &self,
         skill_manager: &zn_spec::skill_manager::SkillManager,
+        registry: &mut skill_registry::SkillRegistry,
     ) -> Result<usize> {
         let mut count = 0;
         for skill in &self.distilled_skills {
             if skill.bundle.usage_count >= 3 && skill.bundle.success_rate > 0.8 {
-                if self.persist_skill_to_disk(skill_manager, skill).is_ok() {
+                if self
+                    .persist_skill_to_disk(skill_manager, registry, skill)
+                    .is_ok()
+                {
                     count += 1;
                 }
             }
@@ -1656,6 +1792,148 @@ mod tests {
         let extractor2 = PatternExtractor::new(tmp_file.clone()).unwrap();
         let patterns = extractor2.get_top_patterns(&PatternCategory::EvidenceCollection, 10);
         assert!(!patterns.is_empty());
+
+        let _ = fs::remove_file(&tmp_file);
+    }
+
+    #[test]
+    fn test_distill_skill_markdown_has_valid_frontmatter() {
+        let tmp_file = temp_dir().join("test_frontmatter.ndjson");
+        let _ = fs::remove_file(&tmp_file);
+
+        let distiller = SkillDistiller::new(tmp_file.clone()).unwrap();
+
+        let skill = DistilledSkill {
+            pattern_id: "test-pattern".to_string(),
+            bundle: zn_types::SkillBundle {
+                id: "test-distilled-skill".to_string(),
+                name: "test-distilled-skill".to_string(),
+                description: "A distilled skill for testing frontmatter".to_string(),
+                version: zn_types::SkillVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                },
+                applicable_scenarios: vec!["implement new feature".to_string()],
+                skill_chain: vec!["step-1".to_string(), "step-2".to_string()],
+                preconditions: vec!["git clean".to_string()],
+                artifacts: vec!["output.txt".to_string()],
+                success_rate: 0.85,
+                usage_count: 5,
+                risk_level: zn_types::ActionRiskLevel::Medium,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                disabled_conditions: vec![],
+            },
+            confidence_score: 0.88,
+            supporting_evidence: vec!["test_evidence".to_string()],
+            usage_recommendations: vec!["Use with caution".to_string()],
+            anti_patterns: vec!["Don't skip tests".to_string()],
+        };
+
+        let markdown = distiller.distill_skill_markdown(&skill).unwrap();
+
+        // Verify YAML frontmatter is present
+        assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("name: test-distilled-skill"));
+        assert!(markdown.contains("description: A distilled skill for testing frontmatter"));
+        assert!(markdown.contains("version: 1.0.0"));
+        assert!(markdown.contains("category: execution"));
+        assert!(markdown.contains("platforms: [claude-code, opencode]"));
+
+        // Verify it parses as valid SkillFile
+        let parsed = zn_spec::skill_format::SkillFile::parse(&markdown);
+        assert!(parsed.is_ok(), "SkillFile::parse failed: {:?}", parsed);
+
+        let parsed = parsed.unwrap();
+        assert_eq!(parsed.frontmatter.name, "test-distilled-skill");
+        assert_eq!(parsed.frontmatter.version, "1.0.0");
+
+        let _ = fs::remove_file(&tmp_file);
+    }
+
+    #[test]
+    fn test_failure_recovery_uses_classification() {
+        use zn_types::governance::{FailureClassification, FailureSeverity};
+
+        let tmp_file = temp_dir().join("test_failure_classify.ndjson");
+        let _ = fs::remove_file(&tmp_file);
+
+        let mut extractor = PatternExtractor::new(tmp_file.clone()).unwrap();
+
+        let mut report = ExecutionReport {
+            task_id: "test-fail".to_string(),
+            success: false,
+            outcome: ExecutionOutcome::RetryableFailure,
+            summary: "Failed".to_string(),
+            details: vec![],
+            tests_passed: false,
+            review_passed: false,
+            artifacts: vec![],
+            generated_artifacts: vec![],
+            evidence: vec![],
+            follow_ups: vec![],
+            workspace_record: None,
+            finish_branch_result: None,
+            finish_branch_automation: None,
+            agent_runs: vec![],
+            review_verdict: None,
+            verification_verdict: None,
+            verification_actions: vec![],
+            verification_action_results: vec![],
+            failure_summary: Some("cargo check failed".to_string()),
+            exit_code: 101,
+            execution_time_ms: 100,
+            token_count: 5000,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
+            failure_classification: Some(FailureClassification {
+                id: "fc-001".to_string(),
+                category: FailureCategory::ToolError,
+                severity: FailureSeverity::Medium,
+                description: "Compiler error in module".to_string(),
+                root_cause: Some("Missing import".to_string()),
+                retry_recommended: true,
+                human_intervention_required: false,
+                suggested_fix: Some("Add `use std::fs;`".to_string()),
+            }),
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
+        };
+
+        let patterns = extractor.extract_from_report(&report);
+        let recovery = patterns
+            .iter()
+            .find(|p| matches!(p.category, PatternCategory::ErrorRecovery))
+            .expect("ErrorRecovery pattern should exist");
+
+        // Should use classified ID, not task_id
+        assert!(
+            recovery.id == "recovery-tool-error",
+            "Expected recovery-tool-error, got {}",
+            recovery.id
+        );
+        assert!(recovery.description.contains("tool-error"));
+        assert!(recovery
+            .preconditions
+            .iter()
+            .any(|p| p.contains("Compiler")));
+
+        // Now test without classification — should fall back to task_id
+        report.failure_classification = None;
+        report.task_id = "fallback-task".to_string();
+        let patterns = extractor.extract_from_report(&report);
+        let fallback = patterns
+            .iter()
+            .find(|p| matches!(p.category, PatternCategory::ErrorRecovery))
+            .expect("ErrorRecovery pattern should exist");
+        assert!(
+            fallback.id == "recovery-fallback-task",
+            "Expected recovery-fallback-task, got {}",
+            fallback.id
+        );
 
         let _ = fs::remove_file(&tmp_file);
     }
