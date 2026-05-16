@@ -828,11 +828,29 @@ echo $COLUMNS $LINES
 
 ## 下一阶段建议
 
-Phase 1-4 和生产化修复均已完成。下一步最值得优先做的是：
+Phase 1-4 和生产化修复均已完成。下一步最值得优先做的是 **AI 任务智能识别与资源分配**：
 
-1. **扩展执行桥** - 把 `zn-exec` 从"骨架执行器"扩展成真正可调用宿主代理与外部工具的执行桥
-2. **CI/CD 流水线** - 添加 GitHub Actions 实现 PR 自动测试、lint 和 release 构建
-3. **TUI 仪表盘增强** — 集成 IntegrationEngine 决策信号和技能状态展示
+### AI 任务智能分级（Task Intelligence Classification）
+
+Zero_Nine 当前对任务的处理是"一刀切"模式——无论大小需求都走完整四层流程。下一步需要引入 **任务复杂度自动识别机制**，在执行前对目标进行分级，从而科学分配算力资源和时间预算。
+
+| 级别 | 特征 | 策略 |
+|------|------|------|
+| **Simple** | 单文件改动、明确指令、无需设计 | 跳过 Brainstorming → 直接 Spec → In-Place 执行 → 轻量验证 |
+| **Medium** | 多文件改动、有明确目标但需设计决策 | 轻量 Brainstorming → Spec → Git Worktree → 标准验证 |
+| **Complex** | 跨模块、需求模糊、需架构决策 | 完整四层流程 → 多 Worktree 并行 → 全量验证 + 人工 Review |
+
+**预期收益：**
+- Simple 任务：执行时间减少 60-80%（跳过不必要的澄清和隔离）
+- 资源按需分配：Worktree 槽位优先留给 Medium/Complex 任务
+- 成本优化：API Token 消耗与任务复杂度正相关
+- 用户体验：小需求秒级响应，大需求深度保障
+
+**实现路径：**
+1. 在 `zn-exec` 新增 `task_classifier.rs`，基于 goal 长度、依赖文件数、关键词等特征进行分级
+2. 扩展 `ExecutionPlan` 增加 `complexity: TaskComplexity` 字段
+3. `zn-loop` 调度器根据复杂度动态调整并行窗口、重试预算和验证等级
+4. 支持手动覆盖（用户可指定 `--complexity simple/medium/complex`）
 
 ---
 
