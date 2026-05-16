@@ -17,7 +17,7 @@ use zn_bridge::proto;
 use zn_bridge::{DispatchHandler, EvidenceHandler, StatusHandler};
 
 use zn_types::{
-    ExecutionMode, ExecutionOutcome, ExecutionPlan, HostKind, QualityGate, TaskItem,
+    ExecutionMode, ExecutionPlan, HostKind, QualityGate, TaskItem,
     WorkspaceStrategy,
 };
 
@@ -119,6 +119,97 @@ impl LocalCliHandler {
         };
 
         (task, plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zn_bridge::proto::{DispatchRequest, ExecutionMode as ProtoMode, QualityGate, WorkspaceStrategy as ProtoStrat};
+    use zn_types::{ExecutionMode, WorkspaceStrategy};
+
+    fn make_request() -> DispatchRequest {
+        DispatchRequest {
+            task_id: "test-1".into(),
+            proposal_id: "prop-1".into(),
+            task_title: "Test Task".into(),
+            task_description: "Do something".into(),
+            context_files: vec![],
+            mode: ProtoMode::default() as i32,
+            workspace_strategy: ProtoStrat::default() as i32,
+            quality_gates: vec![],
+            host_kind: "terminal".into(),
+        }
+    }
+
+    #[test]
+    fn test_build_task_and_plan_mode_mapping() {
+        for (mode_val, expected_mode) in [
+            (1, ExecutionMode::Brainstorming),
+            (2, ExecutionMode::SpecCapture),
+            (3, ExecutionMode::WritingPlans),
+            (5, ExecutionMode::SubagentDev),
+            (9, ExecutionMode::FinishBranch),
+        ] {
+            let mut req = make_request();
+            req.mode = mode_val;
+            let (_task, plan) = LocalCliHandler::build_task_and_plan(&req);
+            assert_eq!(plan.mode, expected_mode, "mode {mode_val}");
+        }
+    }
+
+    #[test]
+    fn test_build_task_and_plan_strategy_mapping() {
+        for (strat_val, expected_strat) in [
+            (1, WorkspaceStrategy::InPlace),
+            (2, WorkspaceStrategy::GitWorktree),
+            (3, WorkspaceStrategy::Sandboxed),
+        ] {
+            let mut req = make_request();
+            req.workspace_strategy = strat_val;
+            let (_, plan) = LocalCliHandler::build_task_and_plan(&req);
+            assert_eq!(plan.workspace_strategy, expected_strat, "strategy {strat_val}");
+        }
+    }
+
+    #[test]
+    fn test_build_task_and_plan_default_mode() {
+        let mut req = make_request();
+        req.mode = 0; // unknown
+        let (_, plan) = LocalCliHandler::build_task_and_plan(&req);
+        assert!(matches!(plan.mode, ExecutionMode::SubagentDev));
+    }
+
+    #[test]
+    fn test_build_task_and_plan_default_strategy() {
+        let mut req = make_request();
+        req.workspace_strategy = 0; // unknown
+        let (_, plan) = LocalCliHandler::build_task_and_plan(&req);
+        assert!(matches!(plan.workspace_strategy, WorkspaceStrategy::InPlace));
+    }
+
+    #[test]
+    fn test_build_task_and_plan_quality_gates() {
+        let mut req = make_request();
+        req.quality_gates = vec![QualityGate {
+            name: "lint".into(),
+            required: true,
+            description: "Run linter".into(),
+        }];
+        let (_, plan) = LocalCliHandler::build_task_and_plan(&req);
+        assert_eq!(plan.quality_gates.len(), 1);
+        assert_eq!(plan.quality_gates[0].name, "lint");
+        assert!(plan.quality_gates[0].required);
+    }
+
+    #[test]
+    fn test_build_task_and_plan_task_defaults() {
+        let req = make_request();
+        let (task, _) = LocalCliHandler::build_task_and_plan(&req);
+        assert_eq!(task.id, "test-1");
+        assert!(matches!(task.status, zn_types::TaskStatus::Pending));
+        assert_eq!(task.max_retries, Some(3));
+        assert!(task.depends_on.is_empty());
     }
 }
 

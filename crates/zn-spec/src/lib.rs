@@ -2197,4 +2197,83 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
+
+    #[test]
+    fn test_policy_read_allowed() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("file.read", &[]);
+        assert!(matches!(decision, zn_types::PolicyDecision::Allow));
+    }
+
+    #[test]
+    fn test_policy_write_with_condition() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("file.write", &["worktree_isolated"]);
+        assert!(matches!(decision, zn_types::PolicyDecision::Allow));
+    }
+
+    #[test]
+    fn test_policy_write_without_condition() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("file.write", &[]);
+        // Without condition, should not be Allow
+        assert!(!matches!(decision, zn_types::PolicyDecision::Allow));
+    }
+
+    #[test]
+    fn test_policy_merge_requires_confirm() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("git.merge", &["tests_passed", "review_approved"]);
+        assert!(matches!(decision, zn_types::PolicyDecision::Ask));
+    }
+
+    #[test]
+    fn test_policy_merge_without_conditions() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("git.merge", &[]);
+        // Without conditions met, should be denied
+        assert!(matches!(decision, zn_types::PolicyDecision::Deny));
+    }
+
+    #[test]
+    fn test_policy_check_true() {
+        let engine = create_default_policy_engine();
+        assert!(engine.check_permission("file.read", &[]));
+    }
+
+    #[test]
+    fn test_policy_check_false() {
+        let engine = create_default_policy_engine();
+        assert!(!engine.check_permission("file.write", &[]));
+    }
+
+    #[test]
+    fn test_policy_no_match_defaults_to_allow() {
+        let engine = create_default_policy_engine();
+        let decision = engine.evaluate_action("unknown.action.xyz", &[]);
+        assert!(matches!(decision, zn_types::PolicyDecision::Allow));
+    }
+
+    #[test]
+    fn test_policy_exception_skips_rule() {
+        let mut engine = create_default_policy_engine();
+        // Add a rule with an exception
+        engine.rules.push(zn_types::PolicyRule {
+            id: "exc-1".into(),
+            name: "exception test".into(),
+            action_pattern: "git.push".into(),
+            risk_level: zn_types::ActionRiskLevel::High,
+            default_decision: zn_types::PolicyDecision::Deny,
+            conditions: vec![],
+            exceptions: vec!["emergency".into()],
+        });
+        // Normal push -> Deny
+        assert!(matches!(
+            engine.evaluate_action("git.push", &[]),
+            zn_types::PolicyDecision::Deny
+        ));
+        // Emergency push -> should skip this rule and default to Allow
+        let decision = engine.evaluate_action("git.push.emergency", &[]);
+        assert!(matches!(decision, zn_types::PolicyDecision::Allow));
+    }
 }

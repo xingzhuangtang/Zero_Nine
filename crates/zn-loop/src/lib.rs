@@ -1319,7 +1319,7 @@ fn execute_proposal(
                 .join("evolve")
                 .join("skill_registry.json");
             if let Ok(mut registry) = zn_evolve::skill_registry::SkillRegistry::new(registry_file) {
-                match distiller.persist_all_qualifying_skills(&skill_manager, &mut registry) {
+                match distiller.persist_all_qualifying_skills_sync(&skill_manager, &mut registry) {
                     Ok(count) if count > 0 => {
                         info!("T2.1: Persisted {} distilled skill(s) to disk", count);
                         append_event(
@@ -2353,4 +2353,667 @@ fn render_proposal_verification(
         completed,
         tasks.len()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env::temp_dir;
+    use zn_types::{
+        ExecutionEnvelope, ExecutionMode, ExecutionOutcome, ExecutionPlan, ExecutionReport,
+        LoopState, QualityGate, SubagentExecutionPath, TaskItem, WorkspaceStrategy,
+    };
+
+    // ---- Tier 1: Pure functions ----
+
+    #[test]
+    fn test_retry_count_for_task() {
+        let mut t = TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        assert_eq!(retry_count_for_task(&t), 0);
+        t.status = TaskStatus::Failed;
+        assert_eq!(retry_count_for_task(&t), 1);
+        t.status = TaskStatus::Running;
+        assert_eq!(retry_count_for_task(&t), 1);
+        t.status = TaskStatus::Completed;
+        assert_eq!(retry_count_for_task(&t), 0);
+        t.status = TaskStatus::Blocked;
+        assert_eq!(retry_count_for_task(&t), 0);
+    }
+
+    #[test]
+    fn test_scheduler_priority_failed() {
+        let t = TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Failed,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let (retry, resource, _) = scheduler_priority(&t);
+        assert_eq!(retry, 0); // highest priority
+    }
+
+    #[test]
+    fn test_scheduler_priority_verification() {
+        let t = TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("verification".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let (_, resource, _) = scheduler_priority(&t);
+        assert_eq!(resource, 2);
+    }
+
+    #[test]
+    fn test_scheduler_priority_finish_branch() {
+        let t = TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("finish_branch".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let (_, resource, _) = scheduler_priority(&t);
+        assert_eq!(resource, 3);
+    }
+
+    #[test]
+    fn test_scheduler_parallel_window_many_tasks() {
+        let tasks: Vec<TaskItem> = (0..3)
+            .map(|i| TaskItem {
+                id: format!("t{i}"),
+                title: "Test".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            })
+            .collect();
+        assert_eq!(scheduler_parallel_window(&tasks), 2);
+    }
+
+    #[test]
+    fn test_scheduler_parallel_window_few_tasks() {
+        let tasks: Vec<TaskItem> = (0..2)
+            .map(|i| TaskItem {
+                id: format!("t{i}"),
+                title: "Test".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            })
+            .collect();
+        assert_eq!(scheduler_parallel_window(&tasks), 1);
+    }
+
+    #[test]
+    fn test_scheduler_worktree_slots_with_finish() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Test".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t2".into(),
+                title: "Finish".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("finish_branch".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        assert_eq!(scheduler_worktree_slots(&tasks), 1);
+    }
+
+    #[test]
+    fn test_scheduler_worktree_slots_without_finish() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Test".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        assert_eq!(scheduler_worktree_slots(&tasks), 2);
+    }
+
+    #[test]
+    fn test_normalized_task_kind_some() {
+        let t = TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("Planning".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        assert_eq!(normalized_task_kind(&t), "planning");
+    }
+
+    #[test]
+    fn test_normalized_task_kind_none() {
+        let t = TaskItem {
+            id: "t1".into(),
+            title: "Hello World".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        assert_eq!(normalized_task_kind(&t), "hello_world");
+    }
+
+    #[test]
+    fn test_choose_empty_tasks() {
+        let result = choose_next_ready_batch(&[], 2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_choose_all_completed() {
+        let tasks = vec![TaskItem {
+            id: "t1".into(),
+            title: "Done".into(),
+            description: "".into(),
+            status: TaskStatus::Completed,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        }];
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_choose_single_pending() {
+        let tasks = vec![TaskItem {
+            id: "t1".into(),
+            title: "Task".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        }];
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_some());
+        let batch = result.unwrap();
+        assert_eq!(batch.selected_indices.len(), 1);
+    }
+
+    #[test]
+    fn test_choose_with_unmet_deps() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Dep".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t2".into(),
+                title: "Blocked".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["t1".into()],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_some());
+        let batch = result.unwrap();
+        assert_eq!(batch.selected_indices.len(), 1);
+        assert_eq!(batch.selected_indices[0], 0);
+    }
+
+    #[test]
+    fn test_choose_with_met_deps() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Dep".into(),
+                description: "".into(),
+                status: TaskStatus::Completed,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t2".into(),
+                title: "Ready".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["t1".into()],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_some());
+        let batch = result.unwrap();
+        assert_eq!(batch.selected_indices.len(), 1);
+    }
+
+    #[test]
+    fn test_choose_retry_budget_exhausted() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Failed".into(),
+                description: "".into(),
+                status: TaskStatus::Failed,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: Some(0),
+                preconditions: vec![],
+            },
+        ];
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_none() || result.as_ref().unwrap().selected_indices.is_empty());
+    }
+
+    #[test]
+    fn test_choose_parallel_limit() {
+        let tasks: Vec<TaskItem> = (0..5)
+            .map(|i| TaskItem {
+                id: format!("t{i}"),
+                title: "Task".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            })
+            .collect();
+        let result = choose_next_ready_batch(&tasks, 2);
+        assert!(result.is_some());
+        let batch = result.unwrap();
+        assert_eq!(batch.selected_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_choose_priority_ordering() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Pending".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t2".into(),
+                title: "Failed".into(),
+                description: "".into(),
+                status: TaskStatus::Failed,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t3".into(),
+                title: "Also Pending".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: Some("execution".into()),
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        let result = choose_next_ready_batch(&tasks, 3);
+        assert!(result.is_some());
+        let batch = result.unwrap();
+        assert_eq!(batch.selected_indices.len(), 2);
+        // Failed task should be first (higher priority)
+        let first = &tasks[batch.selected_indices[0]];
+        assert!(matches!(first.status, TaskStatus::Failed));
+    }
+
+    #[test]
+    fn test_blocked_dependency_summary() {
+        let tasks = vec![
+            TaskItem {
+                id: "t1".into(),
+                title: "Dep".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "t2".into(),
+                title: "Blocked".into(),
+                description: "".into(),
+                status: TaskStatus::Pending,
+                depends_on: vec!["t1".into()],
+                kind: None,
+                contract: zn_types::TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        // t2 depends on t1 which is not completed -> blocked
+        let summary = blocked_dependency_summary(&tasks, 2);
+        assert!(summary.is_some());
+        let s = summary.unwrap();
+        assert!(s.contains("waiting on") || s.contains("paused"));
+    }
+
+    #[test]
+    fn test_blocked_retry_exhausted() {
+        let tasks = vec![TaskItem {
+            id: "t1".into(),
+            title: "Failed".into(),
+            description: "".into(),
+            status: TaskStatus::Failed,
+            depends_on: vec![],
+            kind: None,
+            contract: zn_types::TaskContract::default(),
+            max_retries: Some(1),
+            preconditions: vec![],
+        }];
+        let summary = blocked_dependency_summary(&tasks, 1);
+        assert!(summary.is_some());
+        let s = summary.unwrap();
+        assert!(s.contains("retry budget") || s.contains("paused"));
+    }
+
+    // ---- Tier 2: File I/O tests ----
+
+    #[test]
+    fn test_transition_state_legal() {
+        let tmp = temp_dir().join("zn_loop_test_transition_legal");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let mut state = LoopState {
+            proposal_id: "test-prop".into(),
+            current_task: Some("t1".into()),
+            iteration: 1,
+            retry_count: 0,
+            stage: LoopStage::Ready,
+            updated_at: Utc::now(),
+            max_iterations: None,
+            iteration_start: Utc::now(),
+            elapsed_seconds: 0,
+            transition_history: vec![],
+        };
+        transition_state(&tmp, &mut state, LoopStage::RunningTask, "test");
+        assert_eq!(state.stage, LoopStage::RunningTask);
+        assert_eq!(state.transition_history.len(), 1);
+
+        // Verify NDJSON file was written
+        let log_path = tmp.join(".zero_nine/loop/transitions.ndjson");
+        assert!(log_path.exists());
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("RunningTask"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_transition_state_illegal() {
+        let tmp = temp_dir().join("zn_loop_test_transition_illegal");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let mut state = LoopState {
+            proposal_id: "test-prop".into(),
+            current_task: Some("t1".into()),
+            iteration: 1,
+            retry_count: 0,
+            stage: LoopStage::RunningTask,
+            updated_at: Utc::now(),
+            max_iterations: None,
+            iteration_start: Utc::now(),
+            elapsed_seconds: 0,
+            transition_history: vec![],
+        };
+        let prev_stage = state.stage.clone();
+        transition_state(&tmp, &mut state, LoopStage::Idle, "illegal_test");
+        // Should remain unchanged (RunningTask -> Idle is not allowed)
+        assert_eq!(state.stage, prev_stage);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_persist_iteration_log() {
+        let tmp = temp_dir().join("zn_loop_test_persist_iter");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join(".zero_nine/loop")).unwrap();
+
+        let plan = ExecutionPlan {
+            task_id: "test-iter".into(),
+            objective: "test".into(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Cli,
+            bridge_address: None,
+        };
+        let report = ExecutionReport {
+            task_id: "test-iter".into(),
+            success: true,
+            outcome: ExecutionOutcome::Completed,
+            summary: "test-event".into(),
+            details: vec![],
+            tests_passed: true,
+            review_passed: true,
+            artifacts: vec![],
+            generated_artifacts: vec![],
+            evidence: vec![],
+            follow_ups: vec![],
+            workspace_record: None,
+            finish_branch_result: None,
+            finish_branch_automation: None,
+            agent_runs: vec![],
+            review_verdict: None,
+            verification_verdict: None,
+            verification_actions: vec![],
+            verification_action_results: vec![],
+            failure_summary: None,
+            exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
+            failure_classification: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            tri_role_verdict: None,
+        };
+        persist_iteration_log(&tmp, "test-iter", &plan, &report).unwrap();
+        let log_path = tmp.join(".zero_nine/loop/iterations.jsonl");
+        assert!(log_path.exists());
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("test-iter"));
+        assert!(content.contains("subagent_dev"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_persist_safety_event() {
+        let tmp = temp_dir().join("zn_loop_test_persist_safety");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join(".zero_nine/runtime")).unwrap();
+
+        let event = SafetyEvent::default();
+        persist_safety_event(&tmp, &event);
+        let path = tmp.join(".zero_nine/runtime/safety_events.ndjson");
+        assert!(path.exists());
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("event_type"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_save_execution_envelope() {
+        let tmp = temp_dir().join("zn_loop_test_envelope");
+        let _ = fs::remove_dir_all(&tmp);
+        let prop_dir = tmp.join(".zero_nine/proposals/20260101-test");
+        fs::create_dir_all(&prop_dir).unwrap();
+        fs::create_dir_all(tmp.join(".zero_nine/runtime")).unwrap();
+
+        let envelope = ExecutionEnvelope {
+            proposal_id: "20260101-test".into(),
+            task_id: "t1".into(),
+            task_title: "Test Task".into(),
+            execution_mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            context_files: vec![],
+            context_protocol: None,
+            context_protocol_path: None,
+            quality_gates: vec![],
+            bridge_address: None,
+        };
+        let _result = save_execution_envelope(&tmp, "20260101-test", "t1", &envelope).unwrap();
+
+        assert!(prop_dir.join("task-t1-envelope.json").exists());
+        assert!(tmp.join(".zero_nine/runtime/current-envelope.json").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_infrastructure_failure_report() {
+        let task = TaskItem {
+            id: "t1".into(),
+            title: "Infra Fail".into(),
+            description: "".into(),
+            status: TaskStatus::Running,
+            depends_on: vec![],
+            kind: Some("execution".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        };
+        let plan = ExecutionPlan {
+            task_id: "t1".into(),
+            objective: "test".into(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Cli,
+            bridge_address: None,
+        };
+        let report = infrastructure_failure_report(
+            &task,
+            &plan,
+            "test failure".into(),
+            None,
+            vec!["detail1".into()],
+        );
+        assert!(!report.success);
+        assert!(matches!(report.outcome, ExecutionOutcome::Escalated));
+        assert_eq!(report.task_id, "t1");
+        assert!(!report.tests_passed);
+        assert!(!report.review_passed);
+    }
 }

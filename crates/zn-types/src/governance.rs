@@ -298,6 +298,61 @@ impl Default for PolicyEngine {
     }
 }
 
+impl ActionRiskLevel {
+    /// Numeric ranking for risk level comparison: Low=0, Medium=1, High=2, Critical=3
+    pub fn rank(&self) -> u8 {
+        match self {
+            ActionRiskLevel::Low => 0,
+            ActionRiskLevel::Medium => 1,
+            ActionRiskLevel::High => 2,
+            ActionRiskLevel::Critical => 3,
+        }
+    }
+}
+
+impl PolicyEngine {
+    /// Evaluate whether an action is allowed based on matching rules.
+    /// Returns the decision of the highest-risk matching rule, or Allow if no rule matches.
+    pub fn evaluate_action(&self, action: &str, conditions_met: &[&str]) -> PolicyDecision {
+        let mut matching_rules: Vec<&PolicyRule> = self
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.action_pattern.is_empty() || action.contains(&rule.action_pattern)
+            })
+            .collect();
+        matching_rules.sort_by_key(|r| r.risk_level.rank());
+        matching_rules.reverse();
+
+        for rule in matching_rules {
+            let is_exception = rule.exceptions.iter().any(|e| action.contains(e));
+            if is_exception {
+                continue;
+            }
+            let all_conditions_met = rule.conditions.is_empty()
+                || rule
+                    .conditions
+                    .iter()
+                    .all(|c| conditions_met.contains(&c.as_str()));
+            if all_conditions_met {
+                return rule.default_decision.clone();
+            } else {
+                // Highest-risk rule matched but conditions not met → deny
+                return PolicyDecision::Deny;
+            }
+        }
+        PolicyDecision::Allow
+    }
+
+    /// Check if a specific permission is granted for an action.
+    pub fn check_permission(&self, action: &str, conditions_met: &[&str]) -> bool {
+        matches!(
+            self.evaluate_action(action, conditions_met),
+            PolicyDecision::Allow
+        )
+    }
+}
+
 // ==================== Human Supervision ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -391,3 +391,63 @@ fn normalize_worktree_path(repo_root: &Path, worktree_path: &str) -> PathBuf {
         repo_root.join(&path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn test_normalize_worktree_path_absolute() {
+        let root = Path::new("/some/repo");
+        let result = normalize_worktree_path(root, "/absolute/path");
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_normalize_worktree_path_relative() {
+        let root = Path::new("/some/repo");
+        let result = normalize_worktree_path(root, "worktrees/task-1");
+        assert_eq!(result, PathBuf::from("/some/repo/worktrees/task-1"));
+    }
+
+    #[test]
+    fn test_render_workspace_record_markdown() {
+        let plan = ExecutionPlan {
+            task_id: "task-001".into(),
+            objective: "test".into(),
+            mode: zn_types::ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: zn_types::SubagentExecutionPath::Cli,
+            bridge_address: None,
+        };
+        let now = Utc::now();
+        let record = WorkspaceRecord {
+            strategy: WorkspaceStrategy::GitWorktree,
+            status: WorkspaceStatus::Active,
+            branch_name: "feature/test".into(),
+            worktree_path: "/tmp/wt".into(),
+            base_branch: Some("main".into()),
+            head_branch: Some("main".into()),
+            created_at: now,
+            updated_at: now,
+            notes: vec!["test note".into()],
+        };
+        let md = render_workspace_record_markdown(&plan, &record);
+        assert!(md.contains("task-001"));
+        assert!(md.contains("GitWorktree"));
+        assert!(md.contains("feature/test"));
+        assert!(md.contains("test note"));
+    }
+}

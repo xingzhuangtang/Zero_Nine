@@ -303,3 +303,35 @@ pub fn task_state_is_success(state: i32) -> bool {
 pub fn task_state_is_failure(state: i32) -> bool {
     state == TaskState::Failed as i32 || state == TaskState::Cancelled as i32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_state_is_success() {
+        assert!(task_state_is_success(TaskState::Completed as i32));
+        assert!(!task_state_is_success(TaskState::Failed as i32));
+        assert!(!task_state_is_success(TaskState::Cancelled as i32));
+        assert!(!task_state_is_success(TaskState::Unknown as i32));
+        assert!(!task_state_is_success(TaskState::Running as i32));
+    }
+
+    #[test]
+    fn test_task_state_is_failure() {
+        assert!(task_state_is_failure(TaskState::Failed as i32));
+        assert!(task_state_is_failure(TaskState::Cancelled as i32));
+        assert!(!task_state_is_failure(TaskState::Completed as i32));
+        assert!(!task_state_is_failure(TaskState::Unknown as i32));
+        assert!(!task_state_is_failure(TaskState::Running as i32));
+    }
+
+    #[test]
+    fn test_retry_config_defaults() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.initial_backoff, Duration::from_secs(1));
+        assert_eq!(cfg.max_backoff, Duration::from_secs(30));
+        assert!((cfg.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+}

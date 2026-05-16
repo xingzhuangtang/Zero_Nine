@@ -380,3 +380,247 @@ pub fn generate_compensation_actions(
 
     actions
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env::temp_dir;
+    use std::fs;
+
+    #[test]
+    fn test_check_drift_no_drift() {
+        let desired = DesiredProjectState {
+            schema_version: "v1".into(),
+            proposal_id: Some("p1".into()),
+            expected_branch: Some("main".into()),
+            required_files: vec!["Cargo.toml".into()],
+            expected_test_command: None,
+            required_toolchains: vec!["cargo".into()],
+            required_remote_capabilities: vec![],
+            require_clean_worktree: true,
+        };
+        let actual = ActualProjectState {
+            schema_version: "v1".into(),
+            proposal_id: None,
+            current_branch: Some("main".into()),
+            worktree_clean: true,
+            present_files: vec!["Cargo.toml".into()],
+            available_toolchains: vec!["cargo".into()],
+            detected_test_command: None,
+            remote_capabilities: vec![],
+            notes: vec![],
+        };
+        let result = check_drift(&desired, &actual);
+        assert!(result.report.diffs.is_empty());
+        assert!(!result.blocking);
+    }
+
+    #[test]
+    fn test_check_drift_branch_mismatch() {
+        let desired = DesiredProjectState {
+            schema_version: "v1".into(),
+            proposal_id: Some("p1".into()),
+            expected_branch: Some("feature".into()),
+            required_files: vec![],
+            expected_test_command: None,
+            required_toolchains: vec![],
+            required_remote_capabilities: vec![],
+            require_clean_worktree: false,
+        };
+        let actual = ActualProjectState {
+            schema_version: "v1".into(),
+            proposal_id: None,
+            current_branch: Some("main".into()),
+            worktree_clean: true,
+            present_files: vec![],
+            available_toolchains: vec![],
+            detected_test_command: None,
+            remote_capabilities: vec![],
+            notes: vec![],
+        };
+        let result = check_drift(&desired, &actual);
+        assert!(!result.report.diffs.is_empty());
+        assert_eq!(result.report.diffs[0].field, "branch");
+    }
+
+    #[test]
+    fn test_check_drift_dirty_blocking() {
+        let desired = DesiredProjectState {
+            schema_version: "v1".into(),
+            proposal_id: Some("p1".into()),
+            expected_branch: None,
+            required_files: vec![],
+            expected_test_command: None,
+            required_toolchains: vec![],
+            required_remote_capabilities: vec![],
+            require_clean_worktree: true,
+        };
+        let actual = ActualProjectState {
+            schema_version: "v1".into(),
+            proposal_id: None,
+            current_branch: None,
+            worktree_clean: false,
+            present_files: vec![],
+            available_toolchains: vec![],
+            detected_test_command: None,
+            remote_capabilities: vec![],
+            notes: vec![],
+        };
+        let result = check_drift(&desired, &actual);
+        assert!(!result.report.diffs.is_empty());
+        let diff = &result.report.diffs[0];
+        assert_eq!(diff.field, "worktree_clean");
+        assert!(matches!(diff.severity, DriftSeverity::Blocking));
+    }
+
+    #[test]
+    fn test_check_drift_missing_files() {
+        let desired = DesiredProjectState {
+            schema_version: "v1".into(),
+            proposal_id: Some("p1".into()),
+            expected_branch: None,
+            required_files: vec!["README.md".into(), "Cargo.toml".into()],
+            expected_test_command: None,
+            required_toolchains: vec![],
+            required_remote_capabilities: vec![],
+            require_clean_worktree: false,
+        };
+        let actual = ActualProjectState {
+            schema_version: "v1".into(),
+            proposal_id: None,
+            current_branch: None,
+            worktree_clean: true,
+            present_files: vec!["Cargo.toml".into()],
+            available_toolchains: vec![],
+            detected_test_command: None,
+            remote_capabilities: vec![],
+            notes: vec![],
+        };
+        let result = check_drift(&desired, &actual);
+        assert!(!result.report.diffs.is_empty());
+        // Missing files are reported as "file:<name>"
+        assert!(result.report.diffs.iter().any(|d| d.field == "file:README.md"));
+    }
+
+    #[test]
+    fn test_check_drift_toolchain_mismatch() {
+        let desired = DesiredProjectState {
+            schema_version: "v1".into(),
+            proposal_id: Some("p1".into()),
+            expected_branch: None,
+            required_files: vec![],
+            expected_test_command: None,
+            required_toolchains: vec!["rustc".into(), "cargo".into()],
+            required_remote_capabilities: vec![],
+            require_clean_worktree: false,
+        };
+        let actual = ActualProjectState {
+            schema_version: "v1".into(),
+            proposal_id: None,
+            current_branch: None,
+            worktree_clean: true,
+            present_files: vec![],
+            available_toolchains: vec!["cargo".into()],
+            detected_test_command: None,
+            remote_capabilities: vec![],
+            notes: vec![],
+        };
+        let result = check_drift(&desired, &actual);
+        assert!(!result.report.diffs.is_empty());
+        // Missing toolchains are reported as "toolchain:<name>"
+        assert!(result.report.diffs.iter().any(|d| d.field == "toolchain:rustc"));
+    }
+
+    #[test]
+    fn test_generate_compensation_reset() {
+        let tmp = temp_dir().join("zn_drift_test_reset");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let diffs = vec![StateDiff {
+            field: "worktree_clean".into(),
+            severity: DriftSeverity::Blocking,
+            expected: "clean".into(),
+            actual: "dirty".into(),
+            message: "dirty worktree".into(),
+        }];
+        let actions = generate_compensation_actions(&tmp, &diffs);
+        assert!(!actions.is_empty());
+        assert!(actions.iter().any(|a| matches!(
+            a.action_type,
+            CompensationType::ResetWorkspace
+        )));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_compensation_delete_branch() {
+        let tmp = temp_dir().join("zn_drift_test_branch");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let diffs = vec![StateDiff {
+            field: "ghost_branch:old-feature".into(),
+            severity: DriftSeverity::Warning,
+            expected: "no ghost branches".into(),
+            actual: "old-feature".into(),
+            message: "ghost branch detected".into(),
+        }];
+        let actions = generate_compensation_actions(&tmp, &diffs);
+        assert!(!actions.is_empty());
+        assert!(actions.iter().any(|a| matches!(
+            a.action_type,
+            CompensationType::DeleteBranch
+        )));
+        assert_eq!(actions[0].target, "old-feature");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_compensation_delete_worktree() {
+        let tmp = temp_dir().join("zn_drift_test_worktree");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let diffs = vec![StateDiff {
+            field: "stage:lingering_worktree".into(),
+            severity: DriftSeverity::Warning,
+            expected: "no worktrees".into(),
+            actual: "found worktree: /tmp/wt".into(),
+            message: "lingering worktree".into(),
+        }];
+        let actions = generate_compensation_actions(&tmp, &diffs);
+        assert!(!actions.is_empty());
+        assert!(actions.iter().any(|a| matches!(
+            a.action_type,
+            CompensationType::DeleteWorktree
+        )));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_test_command_cargo() {
+        let tmp = temp_dir().join("zn_drift_test_cargo");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("Cargo.toml"), "").unwrap();
+        assert_eq!(detect_test_command(&tmp), Some("cargo test".into()));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_test_command_npm() {
+        let tmp = temp_dir().join("zn_drift_test_npm");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("package.json"), "").unwrap();
+        assert_eq!(detect_test_command(&tmp), Some("npm test".into()));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_test_command_none() {
+        let tmp = temp_dir().join("zn_drift_test_none");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(detect_test_command(&tmp), None);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
