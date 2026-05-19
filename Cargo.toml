@@ -9,6 +9,7 @@ members = [
   "crates/zn-cli",
   "crates/zn-bridge",
   "crates/zn-sdk",
+  "crates/zn-agent-sdk",
 ]
 resolver = "2"
 
@@ -38,3 +39,6 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+sha2 = "0.10"
+insta = { version = "1", features = ["json", "yaml", "redactions"] }

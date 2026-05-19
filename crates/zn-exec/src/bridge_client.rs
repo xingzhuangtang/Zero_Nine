@@ -46,6 +46,7 @@ pub struct BridgeClient {
     status_client: TaskStatusClient<Channel>,
     evidence_client: EvidenceStreamClient<Channel>,
     addr: SocketAddr,
+    #[allow(dead_code)]
     retry_config: RetryConfig,
 }
 
@@ -135,7 +136,7 @@ impl BridgeClient {
         let quality_gates = plan
             .quality_gates
             .iter()
-            .map(|g| zn_quality_gate_to_proto(g))
+            .map(zn_quality_gate_to_proto)
             .collect::<Vec<_>>();
 
         let request = DispatchRequest {
@@ -148,6 +149,7 @@ impl BridgeClient {
             workspace_strategy: zn_workspace_strategy_to_proto(workspace_strategy) as i32,
             quality_gates,
             host_kind: "claude_code".to_string(),
+            agent_id: String::new(),
         };
 
         let response = self

@@ -226,6 +226,9 @@ pub struct SubagentRecoveryRecord {
     pub replay_ready: bool,
     #[serde(default)]
     pub replay_command: Option<String>,
+    /// Wave level for parallel dispatch recovery (Phase 2)
+    #[serde(default)]
+    pub wave_level: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +237,38 @@ pub struct SubagentRecoveryLedger {
     pub records: Vec<SubagentRecoveryRecord>,
     #[serde(default)]
     pub replay_summary: String,
+}
+
+/// Configuration for parallel subagent dispatch within a task.
+/// Derived from TaskComplexityProfile resource allocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParallelDispatchConfig {
+    /// Maximum number of subagents to run concurrently in a wave
+    pub concurrency: usize,
+    /// Timeout per subagent in seconds
+    pub per_agent_timeout_secs: u64,
+    /// Whether to stop the wave on first failure or let all finish
+    pub fail_fast: bool,
+}
+
+impl Default for ParallelDispatchConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 2,
+            per_agent_timeout_secs: 3600,
+            fail_fast: false,
+        }
+    }
+}
+
+/// A wave of subagents that can execute in parallel (same topological level).
+/// All agents in a wave have their dependencies satisfied by prior waves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentWave {
+    /// Wave level (0 = no dependencies)
+    pub level: usize,
+    /// Dispatches in this wave
+    pub dispatches: Vec<SubagentDispatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +413,8 @@ pub struct ExecutionPlan {
     pub execution_path: SubagentExecutionPath,
     #[serde(default)]
     pub bridge_address: Option<String>,
+    #[serde(default)]
+    pub max_retries: Option<u8>,
 }
 
 // ==================== Execution Report ====================
@@ -423,6 +460,47 @@ pub struct ExecutionReport {
     pub authorization_ticket_id: Option<String>,
     #[serde(default)]
     pub authorized_by: Option<String>,
+    /// Governance summary: actions checked, decisions made, violations recorded
+    #[serde(default)]
+    pub governance_summary: Option<GovernanceSummary>,
+}
+
+impl Default for ExecutionReport {
+    fn default() -> Self {
+        Self {
+            task_id: String::new(),
+            success: false,
+            outcome: ExecutionOutcome::Completed,
+            summary: String::new(),
+            details: Vec::new(),
+            tests_passed: false,
+            review_passed: false,
+            artifacts: Vec::new(),
+            generated_artifacts: Vec::new(),
+            evidence: Vec::new(),
+            follow_ups: Vec::new(),
+            workspace_record: None,
+            finish_branch_result: None,
+            finish_branch_automation: None,
+            agent_runs: Vec::new(),
+            review_verdict: None,
+            verification_verdict: None,
+            verification_actions: Vec::new(),
+            verification_action_results: Vec::new(),
+            failure_summary: None,
+            exit_code: 0,
+            execution_time_ms: 0,
+            token_count: 0,
+            code_quality_score: 0.0,
+            test_coverage: 0.0,
+            user_feedback: None,
+            failure_classification: None,
+            tri_role_verdict: None,
+            authorization_ticket_id: None,
+            authorized_by: None,
+            governance_summary: None,
+        }
+    }
 }
 
 // ==================== Spec Validation ====================
@@ -564,6 +642,8 @@ pub struct RuntimeEvent {
     pub latency_ms: Option<u64>,
     #[serde(default)]
     pub metadata: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    pub agent_id: Option<String>, // Agent that generated this event
 }
 
 impl RuntimeEvent {
@@ -579,6 +659,7 @@ impl RuntimeEvent {
             parent_span_id: None,
             latency_ms: None,
             metadata: None,
+            agent_id: None,
         }
     }
 
@@ -597,6 +678,11 @@ impl RuntimeEvent {
         self.trace_id = trace_id;
         self.span_id = span_id;
         self.parent_span_id = parent_span_id;
+        self
+    }
+
+    pub fn with_agent_id(mut self, agent_id: &str) -> Self {
+        self.agent_id = Some(agent_id.to_string());
         self
     }
 }
@@ -742,7 +828,6 @@ pub struct ZeroNineSubagentResponse {
     pub generated_files: Vec<String>,
 }
 
-
 // ==================== Evolution Signal Types ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,4 +864,108 @@ pub struct EvolutionCandidate {
     pub patch: String,
     pub confidence: f32,
     pub created_at: DateTime<Utc>,
+}
+
+// ==================== Task Complexity Intelligence ====================
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskComplexityLevel {
+    Simple,  // 0.0 - 0.3
+    Medium,  // 0.3 - 0.7
+    Complex, // 0.7 - 1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComplexityDimensions {
+    pub scope: f32,
+    pub dependency_depth: f32,
+    pub ambiguity: f32,
+    pub risk_level: f32,
+    pub novelty: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskComplexityProfile {
+    pub task_id: String,
+    pub complexity_level: TaskComplexityLevel,
+    pub composite_score: f32,
+    pub dimensions: ComplexityDimensions,
+    pub max_retries: u8,
+    pub timeout_seconds: u64,
+    pub recommended_agents: u8,
+    pub requires_worktree: bool,
+    pub requires_review: bool,
+    pub confidence: f32,
+    pub learned_adjustment: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceAllocation {
+    pub task_id: String,
+    pub max_agents: u8,
+    pub max_retries: u8,
+    pub timeout_seconds: u64,
+    pub worktree_required: bool,
+    pub review_required: bool,
+    pub parallel_slot_weight: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplexityClassificationRecord {
+    pub task_id: String,
+    pub predicted_score: f32,
+    pub actual_score: f32,
+    pub execution_time_ms: u64,
+    pub success: bool,
+    pub token_count: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplexityWeights {
+    pub scope_weight: f32,
+    pub dependency_weight: f32,
+    pub ambiguity_weight: f32,
+    pub risk_weight: f32,
+    pub novelty_weight: f32,
+}
+
+impl Default for ComplexityWeights {
+    fn default() -> Self {
+        Self {
+            scope_weight: 0.25,
+            dependency_weight: 0.20,
+            ambiguity_weight: 0.25,
+            risk_weight: 0.15,
+            novelty_weight: 0.15,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifierStats {
+    pub total_classifications: usize,
+    pub avg_prediction_error: f32,
+    pub simple_count: usize,
+    pub medium_count: usize,
+    pub complex_count: usize,
+    pub avg_confidence: f32,
+}
+
+/// Trait for complexity recording, used by IntegrationEngine to avoid circular deps.
+pub trait ComplexityRecorder: Send + Sync {
+    fn record(&mut self, task_id: &str, predicted: f32, report: &ExecutionReport);
+    fn save(&self) -> anyhow::Result<()>;
+}
+
+/// Summary of governance checks performed during execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GovernanceSummary {
+    pub total_actions_checked: usize,
+    pub allowed: usize,
+    pub denied: usize,
+    pub required_approval: usize,
+    pub policy_violations: usize,
+    pub audit_entries_created: usize,
 }

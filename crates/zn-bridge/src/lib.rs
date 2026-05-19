@@ -29,17 +29,17 @@ pub mod proto {
     tonic::include_proto!("zero_nine.bridge.v1");
 }
 
+pub mod mcp_client;
+pub mod mcp_server;
 pub mod server;
 pub mod service;
 pub mod types;
-pub mod mcp_client;
-pub mod mcp_server;
 
+pub use mcp_client::{load_or_create_mcp_config, McpClient, McpConfig, McpTool};
+pub use mcp_server::ZeroNineMcpServer;
 pub use server::BridgeServer;
 pub use service::{DispatchHandler, EvidenceHandler, StatusHandler};
 pub use types::BridgeConfig;
-pub use mcp_client::{McpClient, McpConfig, McpTool, load_or_create_mcp_config};
-pub use mcp_server::ZeroNineMcpServer;
 
 // Re-export Stream for convenience
 pub use futures_core::Stream;

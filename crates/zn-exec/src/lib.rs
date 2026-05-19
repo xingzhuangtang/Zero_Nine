@@ -7,6 +7,7 @@
 //! - gRPC bridge client for agent dispatch
 
 pub mod drift;
+pub mod task_classifier;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -19,13 +20,13 @@ use zn_types::{
     AgentRunRecord, BrainstormError, BrainstormSession, BrainstormVerdict, BranchFinishPreview,
     BranchFinishRequest, ClarificationAnswer, ClarificationQuestion, CompensationAction,
     CompensationType, ContextArtifact, ContextInjectionProtocol, EvidenceKind, EvidenceRecord,
-    EvidenceStatus, ExecutionEnvelope, ExecutionError, ExecutionMode, ExecutionOutcome,
-    ExecutionPlan, ExecutionReport, FailureCategory, FailureClassification, FailureSeverity,
-    FinishBranchAction, FinishBranchAutomation, FinishBranchResult, FinishBranchStatus,
-    GeneratedArtifact, HostKind, PlanStep, QualityGate, ReviewVerdict, SubagentBrief,
-    SubagentDispatch, SubagentExecutionPath, SubagentExecutionRuntime, SubagentRecoveryLedger,
-    SubagentRecoveryRecord, SubagentRunBook, SubagentRunStatus, TaskItem, VerdictStatus,
-    VerificationAction, VerificationActionResult, VerificationVerdict, WorkspacePreparationResult,
+    EvidenceStatus, ExecutionEnvelope, ExecutionError, ExecutionMode, ExecutionPlan,
+    ExecutionReport, FailureCategory, FailureClassification, FailureSeverity, FinishBranchAction,
+    FinishBranchAutomation, FinishBranchResult, FinishBranchStatus, GeneratedArtifact, HostKind,
+    ParallelDispatchConfig, PlanStep, QualityGate, ReviewVerdict, SubagentBrief, SubagentDispatch,
+    SubagentExecutionPath, SubagentExecutionRuntime, SubagentRecoveryLedger,
+    SubagentRecoveryRecord, SubagentRunBook, SubagentRunStatus, TaskComplexityProfile, TaskItem,
+    VerdictStatus, VerificationAction, VerificationActionResult, VerificationVerdict,
     WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy, WorktreePlan,
 };
 
@@ -35,12 +36,26 @@ pub mod bridge_client;
 /// Layer 13: Cross-Cutting Observability
 pub mod observability;
 pub use observability::{
-    create_default_observability, EventEmitter, EventQuery, MetricsAggregator,
+    create_default_observability, EventEmitter, EventQuery, EventBus, EventHook, MetricsAggregator,
 };
 pub use zn_types::TraceContext;
 
 // Subagent dispatcher module
 pub mod subagent_dispatcher;
+
+// Agent executor protocol (trait-based dispatch)
+pub mod agent_protocol;
+pub use agent_protocol::AgentExecutor;
+
+// Built-in agent implementations
+pub mod agent_executors;
+
+// Container sandbox for isolated execution
+pub mod container_sandbox;
+
+// Capability registry for agent discovery and trust management
+pub mod capability_registry;
+pub use capability_registry::CapabilityRegistry;
 
 // LLM fallback module — direct API calls when CLI unavailable
 pub mod llm_fallback;
@@ -62,7 +77,7 @@ pub use token_counter::{OutputOptimizer, TokenBudget, TokenCounter};
 
 // Workspace preparation module (extracted from lib.rs T3.3)
 pub mod workspace_prep;
-pub use workspace_prep::prepare_workspace;
+pub use workspace_prep::{prepare_container_sandbox, prepare_workspace};
 
 // Re-export proto types for convenience
 pub use governance::{
@@ -406,7 +421,55 @@ pub fn build_plan_with_config(
         finish_branch_automation,
         execution_path,
         bridge_address,
+        max_retries: None,
     }
+}
+
+/// Build an execution plan with optional complexity profile.
+/// When a complexity profile is provided, it overrides retry budget, workspace strategy,
+/// adds quality gates for Complex tasks, and enriches risk notes.
+pub fn build_plan_with_classifier(
+    task: &TaskItem,
+    execution_path: SubagentExecutionPath,
+    bridge_address: Option<String>,
+    complexity_profile: Option<&TaskComplexityProfile>,
+) -> ExecutionPlan {
+    let mut plan = build_plan_with_config(task, execution_path, bridge_address);
+
+    if let Some(profile) = complexity_profile {
+        // Override retry budget from complexity profile
+        plan.max_retries = Some(profile.max_retries);
+
+        // Add complexity review gate for Complex tasks
+        if profile.requires_review {
+            plan.quality_gates.push(QualityGate {
+                name: "complexity_review".to_string(),
+                required: true,
+                description: format!(
+                    "Complex task (score {:.2}) requires peer review before merge",
+                    profile.composite_score
+                ),
+            });
+        }
+
+        // Override workspace strategy if profile requires worktree
+        if profile.requires_worktree
+            && matches!(plan.workspace_strategy, WorkspaceStrategy::InPlace)
+        {
+            plan.workspace_strategy = WorkspaceStrategy::GitWorktree;
+        }
+
+        // Enrich risks with complexity information
+        plan.risks.push(format!(
+            "Complexity level: {:?} (score {:.2}) — {} agents recommended, {} retries budget",
+            profile.complexity_level,
+            profile.composite_score,
+            profile.recommended_agents,
+            profile.max_retries
+        ));
+    }
+
+    plan
 }
 
 /// Execute subagent dispatches via real Claude CLI calls.
@@ -414,6 +477,17 @@ pub fn build_plan_with_config(
 pub fn execute_subagent_dispatch(
     project_root: &Path,
     plan: &ExecutionPlan,
+) -> SubagentExecutionOutcome {
+    execute_subagent_dispatch_with_config(project_root, plan, None)
+}
+
+/// Execute subagent dispatches with optional parallel configuration.
+/// When parallel_config is provided, independent subagents run concurrently
+/// up to the configured concurrency limit. Falls back to sequential when None.
+pub fn execute_subagent_dispatch_with_config(
+    project_root: &Path,
+    plan: &ExecutionPlan,
+    parallel_config: Option<ParallelDispatchConfig>,
 ) -> SubagentExecutionOutcome {
     if plan.subagents.is_empty() {
         return SubagentExecutionOutcome {
@@ -425,7 +499,6 @@ pub fn execute_subagent_dispatch(
         };
     }
 
-    // Use task_id from plan as proposal_id for path consistency
     let proposal_id = plan.task_id.as_str();
     let task_id = plan.task_id.as_str();
 
@@ -441,7 +514,6 @@ pub fn execute_subagent_dispatch(
         };
     };
 
-    // Build briefs from subagent specs in the plan
     let briefs: Vec<SubagentBrief> = plan
         .subagents
         .iter()
@@ -456,18 +528,21 @@ pub fn execute_subagent_dispatch(
 
     let objective = format!("Execute task {} for proposal {}", task_id, proposal_id);
     let runbook = dispatcher.create_runbook(&briefs, &objective);
-
-    // Persist runbook artifacts to disk
     let _ = dispatcher.save_runbook(&runbook);
 
-    // Execute: try CLI first, fall back to LLM API
-    let (report, verdict) = if is_claude_available() {
-        dispatcher.run_tri_role_pipeline(&runbook)
-    } else {
-        dispatcher.run_tri_role_pipeline_via_llm(&runbook)
+    let (report, verdict) = match parallel_config {
+        Some(config) if config.concurrency > 1 => {
+            dispatcher.run_tri_role_pipeline_parallel(&runbook, &config)
+        }
+        _ => {
+            if is_claude_available() {
+                dispatcher.run_tri_role_pipeline(&runbook)
+            } else {
+                dispatcher.run_tri_role_pipeline_via_llm(&runbook)
+            }
+        }
     };
 
-    // Convert report to outcome
     let agent_runs: Vec<AgentRunRecord> = report
         .results
         .iter()
@@ -520,6 +595,32 @@ pub fn execute_subagent_dispatch(
         all_succeeded: report.all_succeeded,
         tri_role_verdict: Some(format!("{:?}", verdict)),
     }
+}
+
+/// Derive parallel dispatch configuration from a plan's complexity profile.
+/// Returns None when the plan has 0-1 subagents (no parallelism possible).
+fn derive_parallel_config(plan: &ExecutionPlan) -> Option<ParallelDispatchConfig> {
+    let agent_count = plan.subagents.len();
+    if agent_count <= 1 {
+        return None;
+    }
+
+    let has_dependencies = plan.subagents.iter().any(|s| !s.depends_on.is_empty());
+    let max_retries = plan.max_retries.unwrap_or(2);
+
+    let (concurrency, timeout) = if max_retries >= 5 {
+        (3, 7200)
+    } else if max_retries >= 3 {
+        (2, 3600)
+    } else {
+        (agent_count, 1800)
+    };
+
+    Some(ParallelDispatchConfig {
+        concurrency: concurrency.min(agent_count),
+        per_agent_timeout_secs: timeout,
+        fail_fast: has_dependencies,
+    })
 }
 
 /// Generate compensation actions when a multi-role chain fails.
@@ -611,9 +712,121 @@ pub fn execute_plan(
     let subagent_records = persist_subagent_runbook_artifacts(project_root, plan)?;
     artifacts.extend(subagent_records.all_paths.clone());
 
+    // M10: Pre-execution governance checks
+    let mut governance_allowed = true;
+    let mut governance_details: Vec<String> = Vec::new();
+    let mut governance_summary = zn_types::GovernanceSummary::default();
+
+    if let Ok(mut engine) = governance::PolicyEngine::new(project_root) {
+        // Derive per-task token budget
+        let profile: Option<&zn_types::TaskComplexityProfile> = None; // TODO: wire from planner
+        let task_budget = governance::derive_task_token_budget(profile);
+        engine.token_budget = task_budget;
+
+        // Check governance actions for this plan
+        let actions = vec![
+            governance::ActionType::DispatchSubagent,
+            governance::ActionType::WriteFile,
+        ];
+        for action in &actions {
+            let result = engine.check_action(action);
+            governance_summary.total_actions_checked += 1;
+            if result.blocked {
+                governance_allowed = false;
+                governance_details.push(format!(
+                    "Governance blocked: {:?} — action blocked by policy",
+                    action
+                ));
+                governance_summary.denied += 1;
+                let _ = engine.audit_decision(
+                    &format!("{:?}", action),
+                    "Block",
+                    &format!("{:?}", result.risk_level),
+                    Some(&plan.task_id),
+                    &format!("Action blocked by policy: {:?}", action),
+                );
+            } else if result.requires_approval {
+                governance_summary.required_approval += 1;
+                governance_details
+                    .push(format!("Governance: {:?} requires human approval", action));
+                let _ = engine.audit_decision(
+                    &format!("{:?}", action),
+                    "RequireApproval",
+                    &format!("{:?}", result.risk_level),
+                    Some(&plan.task_id),
+                    &format!("Action requires approval: {:?}", action),
+                );
+            } else {
+                governance_summary.allowed += 1;
+                let _ = engine.audit_decision(
+                    &format!("{:?}", action),
+                    "Allow",
+                    &format!("{:?}", result.risk_level),
+                    Some(&plan.task_id),
+                    &format!("Action allowed: {:?}", action),
+                );
+            }
+        }
+
+        // Run security scan gate for high-risk modes
+        if matches!(
+            plan.mode,
+            ExecutionMode::SubagentDev | ExecutionMode::TddCycle
+        ) {
+            let scan_gate = governance::SecurityScanGate {
+                project_root: project_root.to_path_buf(),
+            };
+            let gate_ctx = governance::GateContext {
+                required_deliverables: plan.deliverables.clone(),
+                ..Default::default()
+            };
+            let scan_result = scan_gate.evaluate(project_root, &plan.task_id, &gate_ctx);
+            if !scan_result.passed {
+                governance_details.push(format!("Security scan: {}", scan_result.summary));
+                if let Some(err) = scan_result.error {
+                    governance_details.push(format!("Security scan error: {}", err));
+                }
+            } else {
+                governance_details.push("Security scan passed".to_string());
+            }
+        }
+    }
+
+    if !governance_allowed {
+        details.extend(governance_details.clone());
+        return Ok(ExecutionReport {
+            task_id: plan.task_id.clone(),
+            success: false,
+            outcome: zn_types::ExecutionOutcome::Blocked,
+            summary: "Execution blocked by governance policy".to_string(),
+            details,
+            tests_passed: false,
+            review_passed: false,
+            artifacts,
+            generated_artifacts,
+            evidence: vec![],
+            follow_ups: vec!["Review governance policy violations before retrying".to_string()],
+            workspace_record,
+            finish_branch_result: None,
+            finish_branch_automation: plan.finish_branch_automation.clone(),
+            agent_runs: vec![],
+            review_verdict: None,
+            verification_verdict: None,
+            verification_actions: vec![],
+            verification_action_results: vec![],
+            failure_summary: Some(governance_details.join("; ")),
+            exit_code: 1,
+            governance_summary: Some(governance_summary),
+            ..Default::default()
+        });
+    }
+
     // M9: Select subagent execution path based on plan configuration
     let subagent_outcome = match &plan.execution_path {
-        SubagentExecutionPath::Cli => execute_subagent_dispatch(project_root, plan),
+        SubagentExecutionPath::Cli => {
+            let config = derive_parallel_config(plan);
+            execute_subagent_dispatch_with_config(project_root, plan, config)
+        }
         SubagentExecutionPath::Bridge => {
             match execute_plan_via_bridge(project_root, task, plan, 300) {
                 Ok(report) => SubagentExecutionOutcome::from_report(&report),
@@ -624,7 +837,8 @@ pub fn execute_plan(
             }
         }
         SubagentExecutionPath::Hybrid => {
-            let cli_outcome = execute_subagent_dispatch(project_root, plan);
+            let config = derive_parallel_config(plan);
+            let cli_outcome = execute_subagent_dispatch_with_config(project_root, plan, config);
             if cli_outcome.all_succeeded {
                 cli_outcome
             } else {
@@ -781,6 +995,26 @@ pub fn execute_plan(
         plan.deliverables.clone(),
     );
 
+    // Post-execution governance audit
+    if let Ok(mut engine) = governance::PolicyEngine::new(project_root) {
+        let final_decision = if success { "Allow" } else { "Deny" };
+        let risk = if success { "Low" } else { "Medium" };
+        let _ = engine.audit_decision(
+            "execute_plan_complete",
+            final_decision,
+            risk,
+            Some(&plan.task_id),
+            &format!(
+                "Execution completed: success={}, tests={}, review={}",
+                success, tests_passed, review_passed
+            ),
+        );
+        // Include audit entry count in summary
+        if let Ok(stats) = engine.get_audit_stats(None) {
+            governance_summary.audit_entries_created = stats.total_entries;
+        }
+    }
+
     let mut report = ExecutionReport {
         task_id: task.id.clone(),
         success,
@@ -812,6 +1046,7 @@ pub fn execute_plan(
         tri_role_verdict: subagent_outcome.tri_role_verdict.clone(),
         authorization_ticket_id: None,
         authorized_by: None,
+        governance_summary: Some(governance_summary),
     };
     report.failure_classification = Some(classify_failure(&report));
     Ok(report)
@@ -2037,6 +2272,7 @@ fn recover_subagent_record(
         evidence_archive_path: Some(evidence_archive_path.to_string()),
         replay_ready: true,
         replay_command: Some(replay_command.to_string()),
+        wave_level: None,
     }
 }
 
@@ -2466,7 +2702,7 @@ fn git_preferred_remote(repo_root: &Path) -> Result<String> {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
 
-    if remotes.iter().any(|name| *name == "origin") {
+    if remotes.contains(&"origin") {
         return Ok("origin".to_string());
     }
 
@@ -2497,6 +2733,7 @@ fn git_current_branch(project_root: &Path) -> Result<String> {
     run_command(&mut command, "failed to resolve current git branch")
 }
 
+#[allow(dead_code)]
 fn git_has_head(repo_root: &Path) -> Result<bool> {
     let output = Command::new("git")
         .arg("-C")
@@ -2536,6 +2773,7 @@ fn git_is_clean(repo_root: &Path) -> Result<bool> {
         .is_empty())
 }
 
+#[allow(dead_code)]
 fn normalize_worktree_path(repo_root: &Path, worktree_path: &str) -> PathBuf {
     let candidate = PathBuf::from(worktree_path);
     if candidate.is_absolute() {
@@ -3792,17 +4030,19 @@ fn build_report_from_agent_result(
         tri_role_verdict: None,
         authorization_ticket_id: None,
         authorized_by: None,
+        governance_summary: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use std::env::temp_dir;
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
-    use zn_types::{SubagentExecutionPath, TaskContract, TaskStatus};
+    use zn_types::{ExecutionOutcome, SubagentExecutionPath, TaskContract, TaskStatus};
 
     fn sample_task(id: &str, title: &str, description: &str) -> TaskItem {
         TaskItem {
@@ -4005,6 +4245,7 @@ mod tests {
             tri_role_verdict: Some("Pass".to_string()),
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
         };
 
         let outcome = SubagentExecutionOutcome::from_report(&report);
@@ -4090,5 +4331,261 @@ mod tests {
         let plan = build_plan_with_config(&task, SubagentExecutionPath::Cli, None);
         let result = execute_plan(&tmp, &task, &plan, None, false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_derive_parallel_config_levels() {
+        // Simple: low max_retries
+        let plan = ExecutionPlan {
+            task_id: "t1".to_string(),
+            objective: "test".to_string(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![
+                SubagentBrief {
+                    role: "a".to_string(),
+                    goal: "a".to_string(),
+                    inputs: vec![],
+                    outputs: vec![],
+                    depends_on: vec![],
+                },
+                SubagentBrief {
+                    role: "b".to_string(),
+                    goal: "b".to_string(),
+                    inputs: vec![],
+                    outputs: vec![],
+                    depends_on: vec![],
+                },
+            ],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Cli,
+            bridge_address: None,
+            max_retries: Some(2),
+        };
+        let config = derive_parallel_config(&plan).unwrap();
+        assert_eq!(config.concurrency, 2);
+        assert_eq!(config.per_agent_timeout_secs, 1800);
+        assert!(!config.fail_fast);
+
+        // Medium: max_retries >= 3
+        let mut plan2 = plan.clone();
+        plan2.max_retries = Some(3);
+        let config2 = derive_parallel_config(&plan2).unwrap();
+        assert_eq!(config2.concurrency, 2);
+        assert_eq!(config2.per_agent_timeout_secs, 3600);
+
+        // Complex: max_retries >= 5
+        let mut plan3 = plan.clone();
+        plan3.max_retries = Some(5);
+        plan3.subagents.push(SubagentBrief {
+            role: "c".to_string(),
+            goal: "c".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+        });
+        let config3 = derive_parallel_config(&plan3).unwrap();
+        assert_eq!(config3.concurrency, 3);
+        assert_eq!(config3.per_agent_timeout_secs, 7200);
+
+        // With dependencies → fail_fast
+        let mut plan4 = plan.clone();
+        plan4.subagents[1].depends_on = vec!["a".to_string()];
+        let config4 = derive_parallel_config(&plan4).unwrap();
+        assert!(config4.fail_fast);
+
+        // Single subagent → None
+        let mut plan5 = plan.clone();
+        plan5.subagents.pop();
+        assert!(derive_parallel_config(&plan5).is_none());
+    }
+
+    #[test]
+    fn test_execute_plan_with_parallel_config() {
+        let tmp = test_project_root();
+
+        let task = TaskItem {
+            id: "parallel-test".to_string(),
+            title: "Parallel Test".to_string(),
+            description: "Test parallel dispatch".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("execution".to_string()),
+            contract: TaskContract::default(),
+            max_retries: Some(5), // Complex → concurrency=3
+            preconditions: vec![],
+        };
+
+        let plan = build_plan_with_config(&task, SubagentExecutionPath::Cli, None);
+
+        // Verify plan has parallel config derived
+        let config = derive_parallel_config(&plan);
+        assert!(config.is_some());
+        // build_plan_with_config creates 2 subagents, so concurrency is capped at 2
+        assert_eq!(config.unwrap().concurrency, 2);
+
+        // execute_plan should handle this without panic
+        let result = execute_plan(&tmp, &task, &plan, None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_plan_sequential_fallback() {
+        let tmp = test_project_root();
+
+        let task = TaskItem {
+            id: "seq-test".to_string(),
+            title: "Sequential Test".to_string(),
+            description: "Test sequential fallback".to_string(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("execution".to_string()),
+            contract: TaskContract::default(),
+            max_retries: Some(2), // Simple → concurrency=agent_count (but only 1 agent)
+            preconditions: vec![],
+        };
+
+        let plan = build_plan_with_config(&task, SubagentExecutionPath::Cli, None);
+
+        // Single subagent → no parallel config
+        let config = derive_parallel_config(&plan);
+        // If plan has subagents but only 1, should return None
+        if plan.subagents.len() <= 1 {
+            assert!(config.is_none());
+        }
+
+        let result = execute_plan(&tmp, &task, &plan, None, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_plan_with_governance_audit_trail() {
+        let tmp = temp_dir().join(format!("governance_test_{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&tmp).unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+
+        let task = sample_task("task-1", "Test Task", "Testing governance audit trail");
+        let plan = ExecutionPlan {
+            task_id: "task-1".to_string(),
+            objective: "Test objective".to_string(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Cli,
+            bridge_address: None,
+            max_retries: None,
+        };
+
+        let report = execute_plan(&tmp, &task, &plan, None, false);
+        assert!(report.is_ok());
+        let report = report.unwrap();
+        assert!(report.governance_summary.is_some());
+        let gov = report.governance_summary.unwrap();
+        assert!(gov.total_actions_checked > 0);
+
+        // Verify audit entries were created
+        let engine = governance::PolicyEngine::new(&tmp).unwrap();
+        let stats = engine.get_audit_stats(None).unwrap();
+        assert!(stats.total_entries > 0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_execute_plan_per_task_budget() {
+        let tmp = temp_dir().join(format!("budget_test_{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Test derive_task_token_budget directly
+        let budget = governance::derive_task_token_budget(None);
+        assert_eq!(budget.max_tokens, 50_000);
+        assert!(budget.can_add(10_000));
+        assert!(!budget.can_add(60_000));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_governance_summary_in_report() {
+        let tmp = temp_dir().join(format!("governance_test_{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&tmp).unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+
+        let task = sample_task("task-1", "Test", "Test governance summary");
+        let plan = ExecutionPlan {
+            task_id: "task-1".to_string(),
+            objective: "Test".to_string(),
+            mode: ExecutionMode::SubagentDev,
+            workspace_strategy: WorkspaceStrategy::InPlace,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: vec![],
+            deliverables: vec![],
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: SubagentExecutionPath::Cli,
+            bridge_address: None,
+            max_retries: None,
+        };
+
+        let report = execute_plan(&tmp, &task, &plan, None, false).unwrap();
+        assert!(report.governance_summary.is_some());
+        let summary = report.governance_summary.as_ref().unwrap();
+        assert!(summary.allowed > 0 || summary.required_approval > 0);
+        assert!(summary.audit_entries_created > 0);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

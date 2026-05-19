@@ -102,7 +102,10 @@ impl Default for SafetyEvent {
 impl SafetyEvent {
     /// Derive a safety event from an execution report if guardrails were triggered.
     /// Returns None for clean completions.
-    pub fn from_report(report: &crate::execution::ExecutionReport, proposal_id: &str) -> Option<Self> {
+    pub fn from_report(
+        report: &crate::execution::ExecutionReport,
+        proposal_id: &str,
+    ) -> Option<Self> {
         let classification = report.failure_classification.as_ref()?;
         let (event_type, description) = match classification.category {
             FailureCategory::PolicyBlocked => (
@@ -242,7 +245,6 @@ pub enum ActionRiskLevel {
     Critical,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyDecision {
@@ -317,9 +319,7 @@ impl PolicyEngine {
         let mut matching_rules: Vec<&PolicyRule> = self
             .rules
             .iter()
-            .filter(|rule| {
-                rule.action_pattern.is_empty() || action.contains(&rule.action_pattern)
-            })
+            .filter(|rule| rule.action_pattern.is_empty() || action.contains(&rule.action_pattern))
             .collect();
         matching_rules.sort_by_key(|r| r.risk_level.rank());
         matching_rules.reverse();
@@ -428,6 +428,256 @@ impl Default for ApprovalTicket {
             approved_by: None,
             approved_at: None,
             rejection_reason: None,
+        }
+    }
+}
+
+// ==================== RBAC ====================
+
+/// RBAC role definition for governance access control.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernanceRole {
+    Admin,    // Full permissions
+    Approver, // Can approve high/critical-risk actions
+    Executor, // Can execute low/medium-risk actions
+    Reviewer, // Read-only + audit review
+    #[default]
+    Observer, // Pure audit viewer
+}
+
+/// Role permission configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolePermission {
+    pub role: GovernanceRole,
+    /// Maximum risk level (numeric rank from ActionRiskLevel::rank)
+    pub max_risk_level: u8,
+    pub can_approve: bool,
+    pub can_modify_policy: bool,
+    pub allowed_actions: Vec<String>, // ActionType names
+}
+
+impl Default for RolePermission {
+    fn default() -> Self {
+        Self {
+            role: GovernanceRole::Observer,
+            max_risk_level: 0,
+            can_approve: false,
+            can_modify_policy: false,
+            allowed_actions: Vec::new(),
+        }
+    }
+}
+
+/// RBAC store mapping users to roles and permissions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RBACStore {
+    pub roles: std::collections::HashMap<String, GovernanceRole>, // user_id -> role
+    pub permissions: Vec<RolePermission>,
+}
+
+// ==================== Audit Log ====================
+
+/// Audit log entry with hash-chain integrity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: String, // UUID
+    pub timestamp: DateTime<Utc>,
+    pub action: String,     // ActionType name
+    pub risk_level: String, // "Low" | "Medium" | "High" | "Critical"
+    pub decision: String,   // "Allow" | "Deny" | "RequireApproval" | "Block"
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>, // Which agent performed this action
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub details: String,
+    pub entry_hash: String, // SHA256 of this entry
+    pub prev_hash: String,  // Hash of previous entry
+}
+
+impl Default for AuditEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            timestamp: Utc::now(),
+            action: String::new(),
+            risk_level: String::new(),
+            decision: String::new(),
+            user_id: None,
+            agent_id: None,
+            task_id: None,
+            details: String::new(),
+            entry_hash: String::new(),
+            prev_hash: String::new(),
+        }
+    }
+}
+
+/// Audit query filter.
+#[derive(Debug, Clone, Default)]
+pub struct AuditQuery {
+    pub action: Option<String>,
+    pub user_id: Option<String>,
+    pub risk_level: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub limit: usize,
+}
+
+// ==================== Compliance ====================
+
+/// Policy violation record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyViolation {
+    pub action: String,
+    pub risk_level: String,
+    pub decision: String,
+    pub timestamp: DateTime<Utc>,
+    pub description: String,
+}
+
+/// Compliance check result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceCheckResult {
+    pub name: String,
+    pub passed: bool,
+    pub severity: String,
+    pub description: String,
+}
+
+/// Compliance report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceReport {
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub compliance_score: f32, // 0-100
+    pub total_actions: usize,
+    pub policy_violations: Vec<PolicyViolation>,
+    pub compliance_checks: Vec<ComplianceCheckResult>,
+    pub recommendations: Vec<String>,
+}
+
+// ==================== Ticket Resolution ====================
+
+/// Approval ticket resolution record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketResolution {
+    pub ticket_id: String,
+    pub resolved_by: String,
+    pub decision: String, // "Approved" | "Rejected"
+    pub rationale: String,
+    pub resolved_at: DateTime<Utc>,
+}
+
+// ==================== Rate Limiting ====================
+
+/// Rate limit configuration for action throttling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    pub max_actions_per_window: u32,
+    pub window_seconds: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_actions_per_window: 100,
+            window_seconds: 3600,
+        }
+    }
+}
+
+// ==================== Multi-Agent Trust Framework ====================
+
+/// Resource quota limits for an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceQuota {
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u64,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: u32,
+    #[serde(default)]
+    pub max_storage: u64,
+    #[serde(default)]
+    pub allowed_strategies: Vec<String>,
+}
+
+fn default_max_tokens() -> u64 {
+    32000
+}
+
+fn default_max_concurrent() -> u32 {
+    3
+}
+
+impl Default for ResourceQuota {
+    fn default() -> Self {
+        Self {
+            max_tokens: default_max_tokens(),
+            max_concurrent: default_max_concurrent(),
+            max_storage: 0,
+            allowed_strategies: Vec::new(),
+        }
+    }
+}
+
+/// Isolation rules defining what resources an agent can access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIsolationRule {
+    #[serde(default)]
+    pub allowed_resource_prefixes: Vec<String>,
+    #[serde(default)]
+    pub deny_patterns: Vec<String>,
+    #[serde(default)]
+    pub network_access: bool,
+    #[serde(default)]
+    pub filesystem_access: bool,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+}
+
+impl Default for AgentIsolationRule {
+    fn default() -> Self {
+        Self {
+            allowed_resource_prefixes: Vec::new(),
+            deny_patterns: Vec::new(),
+            network_access: true,
+            filesystem_access: true,
+            allowed_paths: Vec::new(),
+        }
+    }
+}
+
+/// Permission profile for an agent in the governance system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPermission {
+    pub agent_id: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default = "default_max_risk")]
+    pub max_risk_level: f32,
+    #[serde(default)]
+    pub can_dispatch_to: Vec<String>,
+    #[serde(default)]
+    pub resource_quotas: ResourceQuota,
+    #[serde(default)]
+    pub isolation_rules: AgentIsolationRule,
+}
+
+fn default_max_risk() -> f32 {
+    0.5
+}
+
+impl Default for AgentPermission {
+    fn default() -> Self {
+        Self {
+            agent_id: String::new(),
+            role: String::new(),
+            max_risk_level: default_max_risk(),
+            can_dispatch_to: Vec::new(),
+            resource_quotas: ResourceQuota::default(),
+            isolation_rules: AgentIsolationRule::default(),
         }
     }
 }

@@ -11,6 +11,9 @@ service TaskDispatch {
 
   // Cancel a running task
   rpc CancelTask(CancelRequest) returns (CancelResponse);
+
+  // Register an external agent with the orchestrator
+  rpc RegisterAgent(AgentRegistration) returns (AgentRegistrationResponse);
 }
 
 message DispatchRequest {
@@ -23,6 +26,28 @@ message DispatchRequest {
   WorkspaceStrategy workspace_strategy = 7;
   repeated QualityGate quality_gates = 8;
   string host_kind = 9;
+  // Agent ID for targeted dispatch (optional, empty = auto-select)
+  string agent_id = 10;
+}
+
+message AgentRegistration {
+  string agent_id = 1;
+  string name = 2;
+  string agent_type = 3; // "built_in" | "external" | "human"
+  float trust_score = 4;
+  repeated AgentCapability capabilities = 5;
+}
+
+message AgentCapability {
+  string name = 1;
+  float proficiency = 2;
+  float max_complexity = 3;
+}
+
+message AgentRegistrationResponse {
+  bool success = 1;
+  string message = 2;
+  string agent_id = 3;
 }
 
 message DispatchResponse {

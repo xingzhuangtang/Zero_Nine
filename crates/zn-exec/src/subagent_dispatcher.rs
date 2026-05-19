@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
 use zn_types::{
-    SubagentBrief, SubagentDispatch, SubagentRecoveryLedger, SubagentRecoveryRecord,
-    SubagentRunBook, SubagentRunStatus,
+    ParallelDispatchConfig, SubagentBrief, SubagentDispatch, SubagentRecoveryLedger,
+    SubagentRecoveryRecord, SubagentRunBook, SubagentRunStatus, SubagentWave,
 };
 
 /// Status string for completed agent runs
@@ -162,6 +162,79 @@ impl SubagentDispatcher {
         Ok(runbook_path.display().to_string())
     }
 
+    /// Partition dispatches into parallel execution waves based on dependencies.
+    /// Uses Kahn's algorithm for topological sort, grouping by level.
+    /// Dispatches with no dependencies go in wave 0, dispatches depending
+    /// only on wave-0 dispatches go in wave 1, etc.
+    /// If a cycle is detected, remaining dispatches are forced into a final wave.
+    pub fn build_execution_waves(runbook: &SubagentRunBook) -> Vec<SubagentWave> {
+        use std::collections::HashMap;
+
+        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+        for d in &runbook.dispatches {
+            in_degree.entry(&d.role).or_insert(0);
+            for dep in &d.depends_on_roles {
+                dependents.entry(dep).or_default().push(&d.role);
+                *in_degree.entry(&d.role).or_insert(0) += 1;
+            }
+        }
+
+        let mut waves = Vec::new();
+        let mut remaining = in_degree;
+
+        while !remaining.is_empty() {
+            let ready: Vec<&str> = remaining
+                .iter()
+                .filter(|(_, &deg)| deg == 0)
+                .map(|(&role, _)| role)
+                .collect();
+
+            if ready.is_empty() {
+                // Cycle detected — force remaining into final wave
+                let dispatches: Vec<_> = runbook
+                    .dispatches
+                    .iter()
+                    .filter(|d| remaining.contains_key(d.role.as_str()))
+                    .cloned()
+                    .collect();
+                if !dispatches.is_empty() {
+                    waves.push(SubagentWave {
+                        level: waves.len(),
+                        dispatches,
+                    });
+                }
+                break;
+            }
+
+            let dispatches: Vec<_> = runbook
+                .dispatches
+                .iter()
+                .filter(|d| ready.contains(&d.role.as_str()))
+                .cloned()
+                .collect();
+
+            waves.push(SubagentWave {
+                level: waves.len(),
+                dispatches,
+            });
+
+            for role in &ready {
+                remaining.remove(role);
+                if let Some(deps) = dependents.get(role) {
+                    for dep in deps {
+                        if let Some(deg) = remaining.get_mut(*dep) {
+                            *deg -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        waves
+    }
+
     /// Prepare context for a specific role
     pub fn prepare_context(&self, context: &SubagentContext) -> Result<SubagentContextBundle> {
         let bundle_dir = self
@@ -225,6 +298,7 @@ impl SubagentDispatcher {
             replay_ready: result.success,
             replay_command: None,
             state_transitions: Vec::new(),
+            wave_level: None,
         };
 
         ledger.records.push(record);
@@ -275,7 +349,7 @@ impl SubagentDispatcher {
             outputs,
             evidence_files,
             errors: errors.clone(),
-            all_success: errors.len() == 0,
+            all_success: errors.is_empty(),
         })
     }
 
@@ -309,6 +383,7 @@ impl SubagentDispatcher {
     }
 
     /// Execute all dispatches sequentially, individual failures don't stop the overall run
+    #[allow(deprecated)]
     pub fn try_execute_all(&mut self, runbook: &SubagentRunBook) -> SubagentExecutionReport {
         let mut results = Vec::new();
 
@@ -350,6 +425,7 @@ impl SubagentDispatcher {
     /// Each role waits for its predecessors to succeed before running.
     /// Predecessor outputs become the next role's context inputs.
     /// Returns (report, verdict) where verdict is the TriRoleVerdict.
+    #[allow(deprecated)]
     pub fn run_tri_role_pipeline(
         &mut self,
         runbook: &SubagentRunBook,
@@ -418,6 +494,194 @@ impl SubagentDispatcher {
         };
         let verdict = compute_tri_role_verdict(&report.results);
         (report, verdict)
+    }
+
+    /// Execute dispatches in parallel waves.
+    /// Within each wave, dispatches run concurrently (up to concurrency limit).
+    /// Waves execute sequentially (wave N starts only when wave N-1 completes).
+    /// Dependencies are respected: dispatches in wave N only run if all their
+    /// dependency roles succeeded in earlier waves.
+    /// Returns (report, verdict) matching the existing sequential API.
+    pub fn run_tri_role_pipeline_parallel(
+        &mut self,
+        runbook: &SubagentRunBook,
+        config: &ParallelDispatchConfig,
+    ) -> (SubagentExecutionReport, TriRoleVerdict) {
+        let waves = Self::build_execution_waves(runbook);
+        let mut all_results = Vec::new();
+        let mut succeeded_roles: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+
+        for wave in &waves {
+            // Filter dispatches whose dependencies all succeeded
+            let executable: Vec<&SubagentDispatch> = wave
+                .dispatches
+                .iter()
+                .filter(|d| {
+                    d.depends_on_roles
+                        .iter()
+                        .all(|dep| succeeded_roles.get(dep).copied().unwrap_or(true))
+                })
+                .collect();
+
+            // Record skipped dispatches (dependencies failed)
+            let skipped: Vec<&SubagentDispatch> = wave
+                .dispatches
+                .iter()
+                .filter(|d| !executable.iter().any(|e| std::ptr::eq(*e, *d)))
+                .collect();
+
+            for d in skipped {
+                let skipped_result = DispatchResult {
+                    role: d.role.clone(),
+                    success: false,
+                    output_files: Vec::new(),
+                    error: Some(format!(
+                        "Skipped: dependency role(s) {:?} did not succeed",
+                        d.depends_on_roles
+                    )),
+                    raw_output: None,
+                };
+                let _ = self.record_dispatch(&skipped_result);
+                succeeded_roles.insert(d.role.clone(), false);
+                all_results.push(skipped_result);
+            }
+
+            if executable.is_empty() {
+                if config.fail_fast {
+                    break;
+                }
+                continue;
+            }
+
+            // Execute wave concurrently
+            let wave_results = self.execute_wave(&executable, config);
+
+            for result in &wave_results {
+                let _ = self.record_dispatch(result);
+                succeeded_roles.insert(result.role.clone(), result.success);
+                all_results.push(result.clone());
+            }
+
+            // Fail-fast check
+            if config.fail_fast && wave_results.iter().any(|r| !r.success) {
+                break;
+            }
+        }
+
+        let succeeded = all_results.iter().filter(|r| r.success).count();
+        let total = all_results.len();
+        let failed = total - succeeded;
+        let report = SubagentExecutionReport {
+            results: all_results,
+            all_succeeded: failed == 0,
+            total,
+            succeeded,
+            failed,
+        };
+        let verdict = compute_tri_role_verdict(&report.results);
+        (report, verdict)
+    }
+
+    /// Execute a single wave of dispatches concurrently using thread::scope.
+    /// Each thread creates its own dispatcher instance to avoid shared mutable state.
+    #[allow(deprecated)]
+    fn execute_wave(
+        &self,
+        dispatches: &[&SubagentDispatch],
+        config: &ParallelDispatchConfig,
+    ) -> Vec<DispatchResult> {
+        use std::thread;
+
+        let concurrency = config.concurrency.min(dispatches.len());
+        if concurrency <= 1 || dispatches.is_empty() {
+            // Fall back to sequential for single-dispatch waves
+            return dispatches
+                .iter()
+                .map(|d| {
+                    match SubagentDispatcher::new(
+                        &self.project_root,
+                        &self.proposal_id,
+                        &self.task_id,
+                        self.skill_chain.clone(),
+                    ) {
+                        Ok(dispatcher) => {
+                            dispatcher
+                                .prepare_context_with_handoff(d, &std::collections::HashMap::new());
+                            dispatcher
+                                .execute_dispatch(d)
+                                .unwrap_or_else(|e| DispatchResult {
+                                    role: d.role.clone(),
+                                    success: false,
+                                    output_files: Vec::new(),
+                                    error: Some(e.to_string()),
+                                    raw_output: None,
+                                })
+                        }
+                        Err(e) => DispatchResult {
+                            role: d.role.clone(),
+                            success: false,
+                            output_files: Vec::new(),
+                            error: Some(format!("Dispatcher creation failed: {}", e)),
+                            raw_output: None,
+                        },
+                    }
+                })
+                .collect();
+        }
+
+        // Split dispatches into batches of size `concurrency`
+        let mut all_results = Vec::new();
+        for batch in dispatches.chunks(concurrency) {
+            let project_root = self.project_root.clone();
+            let proposal_id = self.proposal_id.clone();
+            let task_id = self.task_id.clone();
+            let skill_chain = self.skill_chain.clone();
+
+            let batch_results: Vec<DispatchResult> = thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|d| {
+                        let dispatch = (*d).clone();
+                        let pr = project_root.clone();
+                        let pid = proposal_id.clone();
+                        let tid = task_id.clone();
+                        let sc = skill_chain.clone();
+
+                        scope.spawn(move || match SubagentDispatcher::new(&pr, &pid, &tid, sc) {
+                            Ok(dispatcher) => {
+                                dispatcher.prepare_context_with_handoff(
+                                    &dispatch,
+                                    &std::collections::HashMap::new(),
+                                );
+                                dispatcher.execute_dispatch(&dispatch).unwrap_or_else(|e| {
+                                    DispatchResult {
+                                        role: dispatch.role.clone(),
+                                        success: false,
+                                        output_files: Vec::new(),
+                                        error: Some(e.to_string()),
+                                        raw_output: None,
+                                    }
+                                })
+                            }
+                            Err(e) => DispatchResult {
+                                role: dispatch.role.clone(),
+                                success: false,
+                                output_files: Vec::new(),
+                                error: Some(format!("Dispatcher creation failed: {}", e)),
+                                raw_output: None,
+                            },
+                        })
+                    })
+                    .collect();
+
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            all_results.extend(batch_results);
+        }
+
+        all_results
     }
 
     /// Execute the tri-role pipeline using direct LLM API calls
@@ -592,8 +856,61 @@ zero-nine subagent-dispatch \
         )
     }
 
+    /// Execute a subagent dispatch via the AgentExecutor trait.
+    ///
+    /// Converts a `SubagentDispatch` into an `ExecutionPlan` and delegates
+    /// to the provided `AgentExecutor`. This is the preferred dispatch path
+    /// for multi-agent support.
+    pub async fn execute_via_agent(
+        &self,
+        dispatch: &SubagentDispatch,
+        agent: &dyn crate::AgentExecutor,
+    ) -> Result<DispatchResult> {
+        info!(
+            "Executing dispatch for role: {} via agent: {}",
+            dispatch.role,
+            agent.descriptor().name
+        );
+
+        let plan = zn_types::ExecutionPlan {
+            task_id: format!("{}-{}", self.task_id, dispatch.role),
+            objective: dispatch.command_hint.clone(),
+            mode: zn_types::ExecutionMode::TddCycle,
+            workspace_strategy: zn_types::WorkspaceStrategy::GitWorktree,
+            steps: vec![],
+            validation: vec![],
+            quality_gates: vec![],
+            skill_chain: self.skill_chain.clone(),
+            deliverables: dispatch.expected_outputs.clone(),
+            risks: vec![],
+            subagents: vec![],
+            worktree_plan: None,
+            workspace_record: None,
+            verification_actions: vec![],
+            finish_branch_automation: None,
+            execution_path: zn_types::SubagentExecutionPath::default(),
+            bridge_address: None,
+            max_retries: None,
+        };
+
+        let report = agent.execute(&plan).await?;
+
+        Ok(DispatchResult {
+            role: dispatch.role.clone(),
+            success: report.success,
+            output_files: report.artifacts.clone(),
+            error: if report.success {
+                None
+            } else {
+                Some(report.summary.clone())
+            },
+            raw_output: Some(report.summary),
+        })
+    }
+
     /// Execute a subagent dispatch using Claude Code CLI
     /// This is the actual implementation that calls external AI
+    #[deprecated(since = "0.2.0", note = "Use execute_via_agent instead")]
     pub fn execute_dispatch(&self, dispatch: &SubagentDispatch) -> Result<DispatchResult> {
         info!("Executing subagent dispatch for role: {}", dispatch.role);
 
@@ -617,7 +934,7 @@ zero-nine subagent-dispatch \
             for entry in fs::read_dir(&context_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "md") {
+                if path.extension().is_some_and(|ext| ext == "md") {
                     if let Ok(content) = fs::read_to_string(&path) {
                         cmd.arg("--context").arg(&content);
                     }
@@ -820,7 +1137,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher =
+        let dispatcher =
             SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         // Initial load should return None
@@ -1178,7 +1495,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
-        let mut dispatcher =
+        let dispatcher =
             SubagentDispatcher::new(&tmp_dir, "test-proposal", "test-task", vec![]).unwrap();
 
         let briefs = vec![
@@ -1215,6 +1532,7 @@ mod tests {
                 evidence_archive_path: None,
                 replay_ready: false,
                 replay_command: None,
+                wave_level: None,
             }],
             replay_summary: "developer failed".to_string(),
         };
@@ -1291,5 +1609,212 @@ mod tests {
         assert_eq!(verdict, TriRoleVerdict::DevelopmentFailed);
 
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_build_waves_no_deps() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![
+                SubagentDispatch {
+                    role: "a".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+                SubagentDispatch {
+                    role: "b".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+                SubagentDispatch {
+                    role: "c".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+            ],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].level, 0);
+        assert_eq!(waves[0].dispatches.len(), 3);
+    }
+
+    #[test]
+    fn test_build_waves_chain() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![
+                SubagentDispatch {
+                    role: "a".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+                SubagentDispatch {
+                    role: "b".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+                SubagentDispatch {
+                    role: "c".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["b".to_string()],
+                },
+            ],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0].dispatches.len(), 1);
+        assert_eq!(waves[0].dispatches[0].role, "a");
+        assert_eq!(waves[1].dispatches.len(), 1);
+        assert_eq!(waves[1].dispatches[0].role, "b");
+        assert_eq!(waves[2].dispatches.len(), 1);
+        assert_eq!(waves[2].dispatches[0].role, "c");
+    }
+
+    #[test]
+    fn test_build_waves_fan_out() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![
+                SubagentDispatch {
+                    role: "a".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+                SubagentDispatch {
+                    role: "b".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+                SubagentDispatch {
+                    role: "c".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+                SubagentDispatch {
+                    role: "d".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+            ],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        assert_eq!(waves.len(), 2);
+        assert_eq!(waves[0].dispatches.len(), 1);
+        assert_eq!(waves[0].dispatches[0].role, "a");
+        assert_eq!(waves[1].dispatches.len(), 3);
+    }
+
+    #[test]
+    fn test_build_waves_diamond() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![
+                SubagentDispatch {
+                    role: "a".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec![],
+                },
+                SubagentDispatch {
+                    role: "b".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+                SubagentDispatch {
+                    role: "c".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+                SubagentDispatch {
+                    role: "d".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["b".to_string(), "c".to_string()],
+                },
+            ],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0].dispatches.len(), 1);
+        assert_eq!(waves[1].dispatches.len(), 2);
+        assert_eq!(waves[2].dispatches.len(), 1);
+        assert_eq!(waves[2].dispatches[0].role, "d");
+    }
+
+    #[test]
+    fn test_build_waves_cycle() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![
+                SubagentDispatch {
+                    role: "a".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["b".to_string()],
+                },
+                SubagentDispatch {
+                    role: "b".to_string(),
+                    command_hint: "".to_string(),
+                    context_files: vec![],
+                    expected_outputs: vec![],
+                    depends_on_roles: vec!["a".to_string()],
+                },
+            ],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        // Cycle detection should force remaining into final wave
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].dispatches.len(), 2);
+    }
+
+    #[test]
+    fn test_build_waves_single() {
+        let runbook = SubagentRunBook {
+            task_id: "t1".to_string(),
+            dispatches: vec![SubagentDispatch {
+                role: "solo".to_string(),
+                command_hint: "".to_string(),
+                context_files: vec![],
+                expected_outputs: vec![],
+                depends_on_roles: vec![],
+            }],
+            runtime: None,
+        };
+        let waves = SubagentDispatcher::build_execution_waves(&runbook);
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].dispatches.len(), 1);
     }
 }

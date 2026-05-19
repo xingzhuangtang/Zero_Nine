@@ -5,28 +5,28 @@
 //! to maintain backward compatibility with existing `use zn_types::*` imports.
 
 pub mod core;
-pub mod error;
-pub mod state_machine;
-pub mod proposal;
 pub mod drift;
-pub mod execution;
-pub mod governance;
+pub mod error;
 pub mod evolution;
+pub mod execution;
 pub mod github;
+pub mod governance;
+pub mod proposal;
+pub mod state_machine;
 
 // ==================== Re-exports ====================
 // All types are re-exported at the crate root for backward compatibility.
 // Downstream crates can continue using `use zn_types::TypeName;` without changes.
 
 pub use core::*;
-pub use error::*;
-pub use state_machine::*;
-pub use proposal::*;
 pub use drift::*;
-pub use execution::*;
-pub use governance::*;
+pub use error::*;
 pub use evolution::*;
+pub use execution::*;
 pub use github::*;
+pub use governance::*;
+pub use proposal::*;
+pub use state_machine::*;
 
 // ==================== Tests ====================
 // Tests remain in lib.rs to validate cross-module integration.
@@ -360,11 +360,13 @@ mod blueprint_tests {
 
     #[test]
     fn test_proposal_source_roundtrip() {
-        let mut proposal = Proposal::default();
-        proposal.id = "test".to_string();
-        proposal.source_issue_number = Some(99);
-        proposal.source_repo = Some("org/repo".to_string());
-        proposal.source_type = Some(IssueSource::Local);
+        let proposal = Proposal {
+            id: "test".to_string(),
+            source_issue_number: Some(99),
+            source_repo: Some("org/repo".to_string()),
+            source_type: Some(IssueSource::Local),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&proposal).unwrap();
         let restored: Proposal = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.source_issue_number, Some(99));
@@ -517,9 +519,147 @@ mod blueprint_tests {
             finish_branch_automation: None,
             execution_path: SubagentExecutionPath::Bridge,
             bridge_address: Some("127.0.0.1:50051".to_string()),
+            max_retries: None,
         };
 
         assert_eq!(plan.execution_path, SubagentExecutionPath::Bridge);
         assert_eq!(plan.bridge_address, Some("127.0.0.1:50051".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn test_dag_validation_result_valid() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "snap-1".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "1".to_string(),
+                    title: "Build".to_string(),
+                    description: "Build the feature".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec![],
+                    kind: None,
+                    contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
+                },
+                TaskItem {
+                    id: "2".to_string(),
+                    title: "Test".to_string(),
+                    description: "Test the feature".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["1".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
+                },
+            ],
+            edges: vec![],
+        };
+        let result = graph.validate_dag();
+        insta::assert_json_snapshot!(result);
+    }
+
+    #[test]
+    fn test_dag_validation_cycle() {
+        let graph = TaskGraph {
+            schema_version: default_spec_schema_version(),
+            proposal_id: "snap-cycle".to_string(),
+            tasks: vec![
+                TaskItem {
+                    id: "a".to_string(),
+                    title: "A".to_string(),
+                    description: "Task A".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["c".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
+                },
+                TaskItem {
+                    id: "b".to_string(),
+                    title: "B".to_string(),
+                    description: "Task B".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["a".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
+                },
+                TaskItem {
+                    id: "c".to_string(),
+                    title: "C".to_string(),
+                    description: "Task C".to_string(),
+                    status: TaskStatus::Pending,
+                    depends_on: vec!["b".to_string()],
+                    kind: None,
+                    contract: TaskContract::default(),
+                    max_retries: None,
+                    preconditions: vec![],
+                },
+            ],
+            edges: vec![],
+        };
+        let result = graph.validate_dag();
+        insta::assert_json_snapshot!(result);
+    }
+
+    #[test]
+    fn test_state_transition() {
+        let t = LoopStage::Ready
+            .transition_to(LoopStage::RunningTask, "task_started", Some("task-42"))
+            .unwrap();
+        insta::with_settings!({
+            redactions => vec![
+                (".triggered_at", insta::dynamic_redaction(|_, _| "[timestamp]")),
+            ],
+        }, {
+            insta::assert_json_snapshot!(t);
+        });
+    }
+
+    #[test]
+    fn test_proposal_serialization() {
+        let proposal = Proposal {
+            schema_version: default_spec_schema_version(),
+            id: "20260101-proposal-001".to_string(),
+            title: "Add user authentication".to_string(),
+            goal: "Implement OAuth2 login flow".to_string(),
+            status: ProposalStatus::Ready,
+            problem_statement: Some("Users need secure login".to_string()),
+            scope_in: vec!["Login page".to_string()],
+            scope_out: vec!["SSO".to_string()],
+            constraints: vec![],
+            risks: vec![],
+            acceptance_criteria: vec![],
+            dependencies: vec![],
+            non_goals: vec!["SSO".to_string()],
+            execution_strategy: None,
+            tasks: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            source_issue_number: None,
+            source_repo: None,
+            source_type: None,
+            source_brainstorm_session_id: None,
+            design_summary: None,
+        };
+        insta::with_settings!({
+            redactions => vec![
+                (".created_at", insta::dynamic_redaction(|_, _| "[timestamp]")),
+                (".updated_at", insta::dynamic_redaction(|_, _| "[timestamp]")),
+            ],
+        }, {
+            insta::assert_json_snapshot!(proposal);
+        });
     }
 }

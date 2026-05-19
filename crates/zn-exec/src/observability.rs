@@ -16,6 +16,83 @@ use std::path::{Path, PathBuf};
 
 use zn_types::{MetricsSnapshot, RuntimeEvent, TraceContext};
 
+/// Synchronous hook trait for observing events in real-time.
+/// Implementors receive each event as it is emitted.
+pub trait EventHook: Send + Sync {
+    fn on_event(&self, event: &RuntimeEvent) -> Result<()>;
+}
+
+/// Real-time event bus wrapping the JSONL file with a broadcast channel.
+///
+/// Provides both persistent file-based storage and real-time in-memory
+pub struct EventBus {
+    events_file: PathBuf,
+    tx: tokio::sync::broadcast::Sender<RuntimeEvent>,
+    hooks: Vec<Box<dyn EventHook>>,
+}
+
+impl EventBus {
+    /// Create a new EventBus with the given broadcast buffer capacity.
+    pub fn new(events_file: PathBuf, capacity: usize) -> Result<Self> {
+        if let Some(parent) = events_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(capacity);
+
+        Ok(Self {
+            events_file,
+            tx,
+            hooks: Vec::new(),
+        })
+    }
+
+    /// Subscribe to the real-time event stream.
+    /// Returns a receiver that will get all events emitted after subscription.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RuntimeEvent> {
+        self.tx.subscribe()
+    }
+
+    /// Register a synchronous event hook.
+    /// Hooks are called sequentially for each event before broadcast.
+    pub fn add_hook(&mut self, hook: Box<dyn EventHook>) {
+        self.hooks.push(hook);
+    }
+
+    /// Emit an event through the bus (file + broadcast + hooks).
+    pub fn emit(&self, event: &RuntimeEvent) -> Result<()> {
+        // Write to file
+        self.append_event(event)?;
+
+        // Invoke hooks (best-effort — hook failures don't block emission)
+        for hook in &self.hooks {
+            let _ = hook.on_event(event);
+        }
+
+        // Broadcast to async subscribers (best-effort)
+        let _ = self.tx.send(event.clone());
+
+        Ok(())
+    }
+
+    fn append_event(&self, event: &RuntimeEvent) -> Result<()> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.events_file)
+            .with_context(|| {
+                format!("Failed to open events file: {}", self.events_file.display())
+            })?;
+
+        let mut writer = std::io::BufWriter::new(file);
+        let line = serde_json::to_string(event)?;
+        writeln!(writer, "{}", line)?;
+        writer.flush()?;
+
+        Ok(())
+    }
+}
+
 /// Event emitter for structured observability
 pub struct EventEmitter {
     events_file: PathBuf,
@@ -63,6 +140,7 @@ impl EventEmitter {
                 .and_then(|c| c.parent_span_id.clone()),
             latency_ms: None,
             metadata: None,
+            agent_id: None,
         };
 
         self.append_event(&event)
@@ -92,6 +170,7 @@ impl EventEmitter {
                 .and_then(|c| c.parent_span_id.clone()),
             latency_ms: None,
             metadata: None,
+            agent_id: None,
         };
 
         self.append_event(&event)
@@ -124,6 +203,7 @@ impl EventEmitter {
                 .and_then(|c| c.parent_span_id.clone()),
             latency_ms: Some(latency_ms),
             metadata: None,
+            agent_id: None,
         };
 
         self.append_event(&event)
@@ -246,7 +326,7 @@ impl MetricsAggregator {
         let filtered: Vec<_> = self
             .snapshots
             .iter()
-            .filter(|s| task_id.map_or(true, |t| s.task_id == t))
+            .filter(|s| task_id.is_none_or(|t| s.task_id == t))
             .collect();
 
         if filtered.is_empty() {
@@ -280,9 +360,7 @@ impl MetricsAggregator {
         let filtered: Vec<_> = self
             .snapshots
             .iter()
-            .filter(|s| {
-                proposal_id.map_or(true, |p| s.proposal_id.as_ref().map_or(true, |sp| sp == p))
-            })
+            .filter(|s| proposal_id.is_none_or(|p| s.proposal_id.as_ref().is_none_or(|sp| sp == p)))
             .collect();
 
         if filtered.is_empty() {
@@ -373,11 +451,7 @@ impl EventQuery {
                 continue;
             }
             if let Ok(event) = serde_json::from_str::<RuntimeEvent>(&line) {
-                if event
-                    .proposal_id
-                    .as_ref()
-                    .map_or(false, |p| p == proposal_id)
-                {
+                if event.proposal_id.as_ref().is_some_and(|p| p == proposal_id) {
                     results.push(event);
                     if results.len() >= limit {
                         break;
@@ -405,7 +479,7 @@ impl EventQuery {
                 continue;
             }
             if let Ok(event) = serde_json::from_str::<RuntimeEvent>(&line) {
-                if event.trace_id.as_ref().map_or(false, |t| t == trace_id) {
+                if event.trace_id.as_ref().is_some_and(|t| t == trace_id) {
                     results.push(event);
                     if results.len() >= limit {
                         break;
@@ -415,6 +489,51 @@ impl EventQuery {
         }
 
         Ok(results)
+    }
+
+    /// Query events by agent ID
+    pub fn query_by_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<RuntimeEvent>> {
+        if !self.events_file.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = fs::File::open(&self.events_file)?;
+        let reader = BufReader::new(file);
+        let mut results = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<RuntimeEvent>(&line) {
+                if event.agent_id.as_ref().is_some_and(|a| a == agent_id) {
+                    results.push(event);
+                    if results.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Replay the decision trace for a specific task.
+    /// Returns events ordered by timestamp with decision-related metadata.
+    pub fn replay_decision_trace(&self, task_id: &str) -> Result<Vec<RuntimeEvent>> {
+        let events = self.query_by_proposal(task_id, 1000)?;
+        let mut decision_events: Vec<RuntimeEvent> = events
+            .into_iter()
+            .filter(|e| {
+                e.task_id.as_ref().is_some_and(|t| t == task_id)
+                    || e.payload.as_ref().is_some_and(|p| {
+                        p.get("task_id").is_some_and(|v| v.as_str() == Some(task_id))
+                    })
+            })
+            .collect();
+        decision_events.sort_by_key(|e| e.ts);
+        Ok(decision_events)
     }
 
     /// Replay a trace as a span tree
@@ -526,7 +645,7 @@ mod tests {
         let tmp_file = temp_dir().join("test_events.ndjson");
         let _ = fs::remove_file(&tmp_file);
 
-        let mut emitter = EventEmitter::new(tmp_file.clone()).unwrap();
+        let emitter = EventEmitter::new(tmp_file.clone()).unwrap();
         emitter
             .emit("test_event", Some(serde_json::json!({"key": "value"})))
             .unwrap();

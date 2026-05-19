@@ -49,6 +49,9 @@ pub struct IntegrationEngine {
     pub reward_model: RewardModel,
     pub curriculum_manager: CurriculumManager,
     pub belief_tracker: BeliefTracker,
+    pub complexity_recorder: Option<Box<dyn zn_types::ComplexityRecorder>>,
+    /// Per-agent metrics for collective learning
+    agent_metrics: AgentMetricsStore,
 }
 
 /// 集成决策输出
@@ -76,6 +79,53 @@ pub struct IntegratedDecision {
     pub timestamp: chrono::DateTime<Utc>,
     /// 决策理由
     pub reasoning: DecisionReasoning,
+    /// Trust-weighted confidence for multi-agent decisions
+    #[serde(default)]
+    pub trust_weighted_confidence: f32,
+    /// Agents that contributed to this decision
+    #[serde(default)]
+    pub contributing_agents: Vec<String>,
+    /// Decision trace for auditability
+    #[serde(default)]
+    pub decision_trace: Vec<DecisionTraceEntry>,
+}
+
+/// Individual entry in a decision trace
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionTraceEntry {
+    pub timestamp: chrono::DateTime<Utc>,
+    pub stage: String,
+    pub decision: String,
+    pub rationale: String,
+    pub alternatives_considered: Vec<String>,
+    pub agent_id: Option<String>,
+}
+
+/// Per-agent execution metrics for collective learning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMetrics {
+    pub agent_id: String,
+    pub total_tasks: u64,
+    pub successful_tasks: u64,
+    #[serde(default)]
+    pub avg_quality: f32,
+    #[serde(default)]
+    pub avg_latency_ms: u64,
+    #[serde(default)]
+    pub avg_token_usage: u64,
+    #[serde(default)]
+    pub trust_score_trend: Vec<f32>,
+}
+
+/// Collaboration pattern between agents
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollaborationPattern {
+    pub agent_roles: Vec<String>,
+    pub success_rate: f32,
+    pub total_collaborations: u64,
+    pub applicable_task_types: Vec<String>,
+    #[serde(default)]
+    pub avg_latency_ms: u64,
 }
 
 /// 决策理由分解
@@ -98,6 +148,103 @@ pub struct EngineSnapshot {
     pub curriculum_stats: crate::curriculum::CurriculumStats,
     pub belief_summary: Option<crate::belief::BeliefSummary>,
     pub integrated_decision: IntegratedDecision,
+}
+
+/// Per-agent metrics store for collective learning
+pub struct AgentMetricsStore {
+    metrics: std::collections::HashMap<String, AgentMetrics>,
+    collaboration_history: Vec<(Vec<String>, bool, u64)>,
+}
+
+impl AgentMetricsStore {
+    fn new() -> Self {
+        Self {
+            metrics: std::collections::HashMap::new(),
+            collaboration_history: Vec::new(),
+        }
+    }
+
+    fn record_execution(
+        &mut self,
+        agent_id: &str,
+        success: bool,
+        quality: f32,
+        latency_ms: u64,
+        token_usage: u64,
+        trust_score: f32,
+    ) {
+        let entry = self
+            .metrics
+            .entry(agent_id.to_string())
+            .or_insert(AgentMetrics {
+                agent_id: agent_id.to_string(),
+                total_tasks: 0,
+                successful_tasks: 0,
+                avg_quality: 0.0,
+                avg_latency_ms: 0,
+                avg_token_usage: 0,
+                trust_score_trend: Vec::new(),
+            });
+        let n = entry.total_tasks as f32;
+        entry.total_tasks += 1;
+        if success {
+            entry.successful_tasks += 1;
+        }
+        entry.avg_quality = (entry.avg_quality * n + quality) / (n + 1.0);
+        let new_avg_latency = (entry.avg_latency_ms as f64 * n as f64 + latency_ms as f64)
+            / (n as f64 + 1.0);
+        entry.avg_latency_ms = new_avg_latency as u64;
+        let new_avg_token =
+            (entry.avg_token_usage as f64 * n as f64 + token_usage as f64) / (n as f64 + 1.0);
+        entry.avg_token_usage = new_avg_token as u64;
+        entry.trust_score_trend.push(trust_score);
+    }
+
+    fn record_collaboration(&mut self, agent_ids: Vec<String>, success: bool, latency_ms: u64) {
+        self.collaboration_history
+            .push((agent_ids, success, latency_ms));
+    }
+
+    fn get_metrics(&self, agent_id: &str) -> Option<&AgentMetrics> {
+        self.metrics.get(agent_id)
+    }
+
+    fn find_collaboration_patterns(&self) -> Vec<CollaborationPattern> {
+        let mut pattern_map: std::collections::HashMap<String, (u64, u64, u64)> =
+            std::collections::HashMap::new();
+        for (agents, success, latency) in &self.collaboration_history {
+            let mut sorted = agents.clone();
+            sorted.sort();
+            let key = sorted.join(",");
+            let (total, successes, total_latency) = pattern_map.entry(key).or_insert((0, 0, 0));
+            *total += 1;
+            if *success {
+                *successes += 1;
+            }
+            *total_latency += latency;
+        }
+        pattern_map
+            .into_iter()
+            .map(|(key, (total, successes, total_latency))| {
+                let roles: Vec<String> = key.split(',').map(|s| s.to_string()).collect();
+                CollaborationPattern {
+                    agent_roles: roles,
+                    success_rate: if total > 0 {
+                        successes as f32 / total as f32
+                    } else {
+                        0.0
+                    },
+                    total_collaborations: total,
+                    applicable_task_types: vec!["general".to_string()],
+                    avg_latency_ms: if total > 0 {
+                        total_latency / total
+                    } else {
+                        0
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 /// 重置引擎所有子系统为干净状态（用于新项目）
@@ -138,6 +285,8 @@ impl IntegrationEngine {
             reward_model,
             curriculum_manager,
             belief_tracker,
+            complexity_recorder: None,
+            agent_metrics: AgentMetricsStore::new(),
         })
     }
 
@@ -165,7 +314,12 @@ impl IntegrationEngine {
         // 3. 更新信念状态
         self.belief_tracker.update_belief(success, evidence, None);
 
-        // 4. 保存所有状态
+        // 4. 更新复杂度记录
+        if let Some(ref mut recorder) = self.complexity_recorder {
+            recorder.record(task_id, 0.5, report); // 0.5 as default predicted; will be overridden by caller
+        }
+
+        // 5. 保存所有状态
         self.reward_model.save()?;
         self.curriculum_manager.save()?;
         self.belief_tracker.save()?;
@@ -224,7 +378,7 @@ impl IntegrationEngine {
             conflicts: self.detect_conflicts(&belief_decision, &optimal_task, &reward_breakdown),
         };
 
-        IntegratedDecision {
+        let decision = IntegratedDecision {
             should_continue,
             should_change_hypothesis,
             should_escalate,
@@ -236,14 +390,55 @@ impl IntegrationEngine {
             reward_score: reward_breakdown.weighted_score,
             timestamp: Utc::now(),
             reasoning,
-        }
+            trust_weighted_confidence: belief_decision.confidence * reward_breakdown.weighted_score,
+            contributing_agents: Vec::new(),
+            decision_trace: vec![
+                DecisionTraceEntry {
+                    timestamp: Utc::now(),
+                    stage: "belief".to_string(),
+                    decision: format!(
+                        "continue={}, escalate={}, change_hypothesis={}",
+                        belief_decision.should_continue,
+                        belief_decision.should_escalate,
+                        belief_decision.should_change_hypothesis
+                    ),
+                    rationale: belief_decision.confidence.to_string(),
+                    alternatives_considered: vec![
+                        "ProceedToExecution".to_string(),
+                        "GatherMoreEvidence".to_string(),
+                        "EscalateToHuman".to_string(),
+                    ],
+                    agent_id: None,
+                },
+                DecisionTraceEntry {
+                    timestamp: Utc::now(),
+                    stage: "reward".to_string(),
+                    decision: format!("score={}", reward_breakdown.weighted_score),
+                    rationale: format!(
+                        "quality={}, coverage={}",
+                        reward_breakdown.code_quality, reward_breakdown.test_coverage
+                    ),
+                    alternatives_considered: vec![],
+                    agent_id: None,
+                },
+                DecisionTraceEntry {
+                    timestamp: Utc::now(),
+                    stage: "curriculum".to_string(),
+                    decision: format!("difficulty={}", optimal_task.optimal_difficulty),
+                    rationale: format!("mastery={}", optimal_task.current_mastery),
+                    alternatives_considered: vec![],
+                    agent_id: None,
+                },
+            ],
+        };
+        decision
     }
 
     /// 融合三个系统的行动推荐
     fn fuse_actions(
         &self,
         belief_action: &RecommendedAction,
-        curriculum: &OptimalTaskRecommendation,
+        _curriculum: &OptimalTaskRecommendation,
         reward: &crate::reward::RewardBreakdown,
     ) -> RecommendedAction {
         // 如果奖励分数很低，优先收集更多证据
@@ -314,6 +509,9 @@ impl IntegrationEngine {
         self.reward_model.save()?;
         self.curriculum_manager.save()?;
         self.belief_tracker.save()?;
+        if let Some(ref recorder) = self.complexity_recorder {
+            recorder.save()?;
+        }
         Ok(())
     }
 
@@ -326,7 +524,54 @@ impl IntegrationEngine {
             .context("Failed to reset curriculum manager")?;
         self.belief_tracker =
             BeliefTracker::new(paths.belief_file).context("Failed to reset belief tracker")?;
+        self.complexity_recorder = None;
         Ok(())
+    }
+
+    /// Set the complexity recorder for tracking task complexity data.
+    pub fn set_complexity_recorder(&mut self, recorder: Box<dyn zn_types::ComplexityRecorder>) {
+        self.complexity_recorder = Some(recorder);
+    }
+
+    /// Record per-agent execution results for collective learning.
+    pub fn record_agent_execution(
+        &mut self,
+        agent_id: &str,
+        success: bool,
+        quality: f32,
+        latency_ms: u64,
+        token_usage: u64,
+        trust_score: f32,
+    ) {
+        self.agent_metrics.record_execution(
+            agent_id,
+            success,
+            quality,
+            latency_ms,
+            token_usage,
+            trust_score,
+        );
+    }
+
+    /// Record a collaboration event between multiple agents.
+    pub fn record_collaboration(
+        &mut self,
+        agent_ids: Vec<String>,
+        success: bool,
+        latency_ms: u64,
+    ) {
+        self.agent_metrics
+            .record_collaboration(agent_ids, success, latency_ms);
+    }
+
+    /// Get execution metrics for a specific agent.
+    pub fn get_agent_metrics(&self, agent_id: &str) -> Option<&AgentMetrics> {
+        self.agent_metrics.get_metrics(agent_id)
+    }
+
+    /// Discover collaboration patterns from execution history.
+    pub fn find_collaboration_patterns(&self) -> Vec<CollaborationPattern> {
+        self.agent_metrics.find_collaboration_patterns()
     }
 }
 
@@ -375,6 +620,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         }
     }
@@ -462,7 +708,9 @@ mod tests {
             .create_belief("test-goal", "initial hypothesis");
 
         let report = create_mock_report("t1", true);
-        engine.record_execution("t1", true, "evidence for hypothesis", &report).unwrap();
+        engine
+            .record_execution("t1", true, "evidence for hypothesis", &report)
+            .unwrap();
 
         let summary = engine.belief_tracker.get_summary();
         assert!(summary.unwrap().confidence > 0.0);
@@ -478,7 +726,9 @@ mod tests {
 
         let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
         let report = create_mock_report("t1", true);
-        engine.record_execution("t1", true, "completed", &report).unwrap();
+        engine
+            .record_execution("t1", true, "completed", &report)
+            .unwrap();
 
         let stats = engine.curriculum_manager.get_stats();
         assert!(stats.total_tasks >= 1);
@@ -512,7 +762,9 @@ mod tests {
 
         let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
         let report = create_mock_report("t1", false);
-        engine.record_execution("t1", false, "low quality", &report).unwrap();
+        engine
+            .record_execution("t1", false, "low quality", &report)
+            .unwrap();
 
         let decision = engine.get_integrated_decision();
         // Low reward should not recommend continue with high confidence
@@ -555,12 +807,16 @@ mod tests {
         let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
         // One success to build confidence but with moderate quality
         let report = create_mock_report("t1", true);
-        engine.record_execution("t1", true, "strong evidence", &report).unwrap();
+        engine
+            .record_execution("t1", true, "strong evidence", &report)
+            .unwrap();
 
         let decision = engine.get_integrated_decision();
         // Check reasoning for conflicts
-        assert!(decision.reasoning.belief_reasoning.len() > 0
-            || decision.reasoning.reward_reasoning.len() > 0);
+        assert!(
+            !decision.reasoning.belief_reasoning.is_empty()
+                || !decision.reasoning.reward_reasoning.is_empty()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -573,7 +829,9 @@ mod tests {
 
         let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
         let report = create_mock_report("t1", true);
-        engine.record_execution("t1", true, "easy", &report).unwrap();
+        engine
+            .record_execution("t1", true, "easy", &report)
+            .unwrap();
 
         let decision = engine.get_integrated_decision();
         assert!(decision.recommended_difficulty >= 0.0);
@@ -640,9 +898,15 @@ mod tests {
         engine.record_execution("t1", true, "ok", &report).unwrap();
 
         engine.save_all().unwrap();
-        assert!(tmp_dir.join(".zero_nine/evolve/pairwise_comparisons.ndjson").exists());
-        assert!(tmp_dir.join(".zero_nine/evolve/curriculum_history.ndjson").exists());
-        assert!(tmp_dir.join(".zero_nine/evolve/belief_states.ndjson").exists());
+        assert!(tmp_dir
+            .join(".zero_nine/evolve/pairwise_comparisons.ndjson")
+            .exists());
+        assert!(tmp_dir
+            .join(".zero_nine/evolve/curriculum_history.ndjson")
+            .exists());
+        assert!(tmp_dir
+            .join(".zero_nine/evolve/belief_states.ndjson")
+            .exists());
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -663,8 +927,10 @@ mod tests {
             .unwrap();
 
         let decision = engine.get_integrated_decision();
-        assert!(!decision.reasoning.belief_reasoning.is_empty()
-            || !decision.reasoning.reward_reasoning.is_empty());
+        assert!(
+            !decision.reasoning.belief_reasoning.is_empty()
+                || !decision.reasoning.reward_reasoning.is_empty()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -685,6 +951,142 @@ mod tests {
         let snapshot = engine.get_snapshot().unwrap();
         assert!(snapshot.reward_breakdown.code_quality >= 0.0);
         assert!(snapshot.integrated_decision.confidence > 0.0);
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    /// Mock ComplexityRecorder for testing without circular dependency on zn-exec
+    struct MockComplexityRecorder {
+        recorded: std::sync::Arc<std::sync::Mutex<Vec<(String, f32)>>>,
+        save_called: std::sync::Arc<std::sync::Mutex<bool>>,
+    }
+
+    impl MockComplexityRecorder {
+        fn new() -> Self {
+            Self {
+                recorded: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                save_called: std::sync::Arc::new(std::sync::Mutex::new(false)),
+            }
+        }
+    }
+
+    impl zn_types::ComplexityRecorder for MockComplexityRecorder {
+        fn record(&mut self, task_id: &str, predicted: f32, _report: &zn_types::ExecutionReport) {
+            self.recorded
+                .lock()
+                .unwrap()
+                .push((task_id.to_string(), predicted));
+        }
+
+        fn save(&self) -> anyhow::Result<()> {
+            *self.save_called.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_set_complexity_recorder() {
+        let tmp_dir = temp_dir().join("ie_recorder_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
+        assert!(engine.complexity_recorder.is_none());
+
+        // Set mock recorder
+        let mock = MockComplexityRecorder::new();
+        let recorded = mock.recorded.clone();
+        let save_called = mock.save_called.clone();
+        engine.set_complexity_recorder(Box::new(mock));
+        assert!(engine.complexity_recorder.is_some());
+
+        // Record execution - should call recorder.record()
+        let report = create_mock_report("task-1", true);
+        engine
+            .record_execution("task-1", true, "Test passed", &report)
+            .unwrap();
+
+        // Verify record was called
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "task-1");
+        assert!((recorded[0].1 - 0.5).abs() < f32::EPSILON); // default predicted score
+
+        // Verify save_all calls recorder.save()
+        engine.save_all().unwrap();
+        assert!(*save_called.lock().unwrap());
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_record_agent_execution() {
+        let tmp_dir = temp_dir().join("ie_agent_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
+        engine.record_agent_execution("agent-a", true, 0.85, 1500, 3200, 0.7);
+        engine.record_agent_execution("agent-a", true, 0.9, 1200, 2800, 0.75);
+        engine.record_agent_execution("agent-b", false, 0.4, 3000, 5000, 0.3);
+
+        let metrics_a = engine.get_agent_metrics("agent-a").unwrap();
+        assert_eq!(metrics_a.total_tasks, 2);
+        assert_eq!(metrics_a.successful_tasks, 2);
+        assert!(metrics_a.avg_quality > 0.8);
+
+        let metrics_b = engine.get_agent_metrics("agent-b").unwrap();
+        assert_eq!(metrics_b.total_tasks, 1);
+        assert_eq!(metrics_b.successful_tasks, 0);
+
+        assert!(engine.get_agent_metrics("nonexistent").is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_collaboration_patterns() {
+        let tmp_dir = temp_dir().join("ie_collab_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
+        engine.record_collaboration(vec!["a".into(), "b".into()], true, 2000);
+        engine.record_collaboration(vec!["a".into(), "b".into()], true, 1800);
+        engine.record_collaboration(vec!["a".into(), "b".into()], false, 5000);
+        engine.record_collaboration(vec!["c".into()], true, 1000);
+
+        let patterns = engine.find_collaboration_patterns();
+        assert_eq!(patterns.len(), 2);
+
+        let ab = patterns.iter().find(|p| p.agent_roles.len() == 2).unwrap();
+        assert_eq!(ab.total_collaborations, 3);
+        assert!((ab.success_rate - 2.0 / 3.0).abs() < 0.01);
+
+        let c = patterns.iter().find(|p| p.agent_roles == &["c"]).unwrap();
+        assert_eq!(c.total_collaborations, 1);
+        assert_eq!(c.success_rate, 1.0);
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_decision_trace_populated() {
+        let tmp_dir = temp_dir().join("ie_trace_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut engine = IntegrationEngine::new(&tmp_dir).unwrap();
+        let report = create_mock_report("t1", true);
+        engine.record_execution("t1", true, "ok", &report).unwrap();
+
+        let decision = engine.get_integrated_decision();
+        assert!(!decision.decision_trace.is_empty());
+        assert!(decision.trust_weighted_confidence > 0.0);
+        assert_eq!(decision.decision_trace.len(), 3);
+        assert_eq!(decision.decision_trace[0].stage, "belief");
+        assert_eq!(decision.decision_trace[1].stage, "reward");
+        assert_eq!(decision.decision_trace[2].stage, "curriculum");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

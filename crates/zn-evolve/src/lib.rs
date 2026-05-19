@@ -43,6 +43,12 @@ pub use ai_client::{
     AIResponse, FeedbackStats, MessageRole, TokenUsage, UserFeedbackCollector, UserFeedbackEntry,
 };
 
+// Cloud sync - 演化数据云同步
+pub mod cloud_sync;
+pub use cloud_sync::{
+    CloudSyncClient, CloudSyncConfig, CloudSyncState, MergeResult, VersionVector,
+};
+
 pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
     let collected_required = report
         .evidence
@@ -159,7 +165,7 @@ pub fn propose_candidate(report: &ExecutionReport) -> Option<EvolutionCandidate>
         let has_failure_summary = report
             .failure_summary
             .as_ref()
-            .map_or(false, |s| !s.is_empty());
+            .is_some_and(|s| !s.is_empty());
         let has_agent_runs = !report.agent_runs.is_empty();
         let diagnostic_bonus =
             if has_failure_summary { 0.10 } else { 0.0 } + if has_agent_runs { 0.05 } else { 0.0 };

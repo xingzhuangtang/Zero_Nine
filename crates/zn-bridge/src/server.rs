@@ -279,6 +279,23 @@ impl proto::task_dispatch_server::TaskDispatch for TaskDispatchService {
             message: "Task cancelled (no handler configured)".to_string(),
         }))
     }
+
+    async fn register_agent(
+        &self,
+        request: Request<proto::AgentRegistration>,
+    ) -> Result<Response<proto::AgentRegistrationResponse>, Status> {
+        let req = request.into_inner();
+        debug!(
+            "RegisterAgent request: agent_id={}, name={}, type={}",
+            req.agent_id, req.name, req.agent_type
+        );
+
+        Ok(Response::new(proto::AgentRegistrationResponse {
+            success: true,
+            message: format!("Agent {} registered successfully", req.name),
+            agent_id: req.agent_id,
+        }))
+    }
 }
 
 // ============================================================================

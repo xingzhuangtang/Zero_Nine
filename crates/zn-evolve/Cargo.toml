@@ -18,3 +18,4 @@ zn-types = { path = "../zn-types" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+insta.workspace = true

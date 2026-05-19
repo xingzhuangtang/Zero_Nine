@@ -10,7 +10,6 @@ use std::process::Command;
 
 use zn_types::{
     ExecutionPlan, WorkspacePreparationResult, WorkspaceRecord, WorkspaceStatus, WorkspaceStrategy,
-    WorktreePlan,
 };
 
 /// Prepare workspace according to the execution plan's strategy.
@@ -224,6 +223,51 @@ fn prepare_sandbox(
     })
 }
 
+/// Prepare a container-based sandbox using Docker/Podman.
+/// Falls back to directory-based sandbox if no container runtime is available.
+pub fn prepare_container_sandbox(
+    project_root: &Path,
+    plan: &ExecutionPlan,
+) -> Result<WorkspacePreparationResult> {
+    use crate::container_sandbox::default_env_spec;
+
+    // Try container first; fall back to directory sandbox
+    let spec = default_env_spec(project_root, "rust:latest");
+    match crate::container_sandbox::ContainerSandbox::provision(&spec) {
+        Ok(sandbox) => {
+            let now = Utc::now();
+            let record = WorkspaceRecord {
+                strategy: WorkspaceStrategy::Sandboxed,
+                status: WorkspaceStatus::Active,
+                branch_name: format!("container-{}", plan.task_id),
+                worktree_path: format!("container:{}", sandbox.container_id()),
+                base_branch: None,
+                head_branch: None,
+                created_at: now,
+                updated_at: now,
+                notes: vec![format!(
+                    "Container sandbox: {} (image: {})",
+                    sandbox.container_id(),
+                    spec.base_image
+                )],
+            };
+            Ok(WorkspacePreparationResult {
+                success: true,
+                summary: format!(
+                    "Provisioned container sandbox: {}",
+                    sandbox.container_id()
+                ),
+                record: Some(record),
+                created_paths: vec![],
+            })
+        }
+        Err(_) => {
+            // Fall back to directory-based sandbox
+            prepare_sandbox(project_root, plan)
+        }
+    }
+}
+
 fn fallback_to_in_place(
     project_root: &Path,
     plan: &ExecutionPlan,
@@ -371,6 +415,7 @@ fn git_branch_exists(repo_root: &Path, branch_name: &str) -> Result<bool> {
     Ok(!output.trim().is_empty())
 }
 
+#[allow(dead_code)]
 fn git_is_clean(repo_root: &Path) -> Result<bool> {
     let output = run_command(
         Command::new("git")
@@ -431,6 +476,7 @@ mod tests {
             finish_branch_automation: None,
             execution_path: zn_types::SubagentExecutionPath::Cli,
             bridge_address: None,
+            max_retries: None,
         };
         let now = Utc::now();
         let record = WorkspaceRecord {
