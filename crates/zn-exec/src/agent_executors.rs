@@ -36,6 +36,7 @@ fn run_cli_command(binary: &str, prompt: &str, extra_args: &[&str]) -> Result<Co
 
 struct CommandOutput {
     success: bool,
+    #[allow(dead_code)]
     stdout: String,
     stderr: String,
 }

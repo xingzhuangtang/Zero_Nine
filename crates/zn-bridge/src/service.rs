@@ -8,7 +8,10 @@ use crate::proto;
 /// Handler for task dispatch operations
 #[async_trait::async_trait]
 pub trait DispatchHandler: Send + Sync {
-    async fn dispatch_task(&self, request: proto::DispatchRequest) -> Result<proto::DispatchResponse>;
+    async fn dispatch_task(
+        &self,
+        request: proto::DispatchRequest,
+    ) -> Result<proto::DispatchResponse>;
     async fn cancel_task(&self, request: proto::CancelRequest) -> Result<proto::CancelResponse>;
 }
 

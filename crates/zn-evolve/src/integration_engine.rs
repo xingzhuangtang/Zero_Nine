@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(ab.total_collaborations, 3);
         assert!((ab.success_rate - 2.0 / 3.0).abs() < 0.01);
 
-        let c = patterns.iter().find(|p| p.agent_roles == &["c"]).unwrap();
+        let c = patterns.iter().find(|p| p.agent_roles == ["c"]).unwrap();
         assert_eq!(c.total_collaborations, 1);
         assert_eq!(c.success_rate, 1.0);
 

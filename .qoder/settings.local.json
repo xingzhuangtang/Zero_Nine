@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/tangxingzhuang/Freedom/Zero_Nine -type f -name \"*.rs\" | head -50)",
+      "Bash(cargo test --all 2>&1 | tail -30)",
+      "Bash(cargo test --all 2>&1 | grep -E \"^test result:|running [0-9]+ test\" | head -20)",
+      "Bash(grep -rn '#\\\\[test\\\\]' /Users/tangxingzhuang/Freedom/Zero_Nine/crates/*/src/*.rs 2>/dev/null | wc -l)",
+      "Bash(grep:*)"
+    ]
+  }
+}

@@ -9,7 +9,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use zn_types::{AgentDescriptor, Capability};
+use zn_types::AgentDescriptor;
+#[allow(unused_imports)]
+use zn_types::Capability;
 
 /// History entry for a trust score change.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,11 +6,11 @@
 //! - Memory action execution (add, replace, remove)
 
 use anyhow::{Context, Result};
-use zn_types::MemoryToolError;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use zn_types::MemoryToolError;
 
 /// Memory target for operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,7 +224,7 @@ updated: YYYY-MM-DD
 
                 for line in lines {
                     new_lines.push(line);
-                    if line == &section_header {
+                    if line == section_header.as_str() {
                         in_section = true;
                     } else if in_section && line.starts_with("##") && !added {
                         // Next section, insert content before it

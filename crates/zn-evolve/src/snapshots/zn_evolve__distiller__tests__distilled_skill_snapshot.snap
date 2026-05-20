@@ -1,0 +1,38 @@
+---
+source: crates/zn-evolve/src/distiller.rs
+assertion_line: 2254
+expression: skill
+---
+{
+  "pattern_id": "auth-pattern",
+  "bundle": {
+    "id": "auth-pattern",
+    "name": "Auth Pattern",
+    "version": {
+      "major": 1,
+      "minor": 0,
+      "patch": 0
+    },
+    "description": "Detects and extracts authentication patterns",
+    "applicable_scenarios": [
+      "security"
+    ],
+    "preconditions": [],
+    "disabled_conditions": [],
+    "risk_level": "medium",
+    "skill_chain": [],
+    "artifacts": [],
+    "usage_count": 5,
+    "success_rate": 0.88,
+    "created_at": "[timestamp]",
+    "updated_at": "[timestamp]"
+  },
+  "confidence_score": 0.85,
+  "supporting_evidence": [
+    "evidence-1"
+  ],
+  "usage_recommendations": [],
+  "anti_patterns": [
+    "no-plain-text-passwords"
+  ]
+}

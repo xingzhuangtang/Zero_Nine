@@ -1,0 +1,15 @@
+---
+source: crates/zn-types/src/lib.rs
+assertion_line: 567
+expression: result
+---
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "critical_path": [
+    "1",
+    "2"
+  ],
+  "max_depth": 2
+}

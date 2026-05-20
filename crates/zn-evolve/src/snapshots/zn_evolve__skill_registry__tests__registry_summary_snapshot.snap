@@ -1,0 +1,10 @@
+---
+source: crates/zn-evolve/src/skill_registry.rs
+assertion_line: 491
+expression: summary
+---
+{
+  "total_skills": 2,
+  "total_versions": 2,
+  "active_count": 2
+}

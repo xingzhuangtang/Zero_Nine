@@ -1,0 +1,22 @@
+---
+source: crates/zn-types/src/lib.rs
+assertion_line: 613
+expression: result
+---
+{
+  "valid": false,
+  "errors": [
+    {
+      "error_code": "circular_dependency",
+      "message": "Circular dependency detected: a -> b -> c",
+      "involved_task_ids": [
+        "a",
+        "b",
+        "c"
+      ]
+    }
+  ],
+  "warnings": [],
+  "critical_path": [],
+  "max_depth": 0
+}

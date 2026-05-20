@@ -14,10 +14,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use zn_types::governance::{FailureCategory, FailureClassification};
+use zn_types::governance::FailureCategory;
 use zn_types::{
-    ActionRiskLevel, EvidenceStatus, ExecutionOutcome, ExecutionReport, SkillBundle, SkillVersion,
-    VerdictStatus, WorkspaceStrategy,
+    ActionRiskLevel, EvidenceStatus, ExecutionReport, SkillBundle, SkillVersion, VerdictStatus,
+    WorkspaceStrategy,
 };
 
 use crate::skill_registry;
@@ -106,7 +106,7 @@ impl PatternExtractor {
             if let Ok(pattern) = serde_json::from_str::<ExecutionPattern>(&line) {
                 self.patterns
                     .entry(pattern.category.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(pattern);
             }
         }
@@ -356,7 +356,7 @@ impl PatternExtractor {
         let patterns = self
             .patterns
             .entry(new_pattern.category.clone())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         // Try to find matching pattern
         let existing = patterns.iter_mut().find(|p| {
@@ -902,6 +902,7 @@ impl SkillDistiller {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let risk_level_str = format!("{:?}", skill.bundle.risk_level);
         let markdown = format!(
             r#"---
 name: {name}
@@ -974,23 +975,139 @@ Avoid the following:
             evidence = evidence_list,
             recommendations = recommendation_list,
             anti_patterns = anti_pattern_list,
-            risk_level = format!("{:?}", skill.bundle.risk_level),
+            risk_level = risk_level_str,
             risks = "Review execution logs for additional context.",
         );
 
         Ok(markdown)
     }
 
+    /// Distill a skill into SKILL.md content using the LLM to generate enriched content.
+    ///
+    /// Falls back to the template-based `distill_skill_markdown()` if:
+    /// - No API key is configured
+    /// - The LLM call fails
+    /// - The response cannot be parsed as valid skill markdown
+    pub async fn distill_skill_markdown_with_llm(&self, skill: &DistilledSkill) -> Result<String> {
+        // Build a structured prompt from the pattern metadata
+        let scenario_list = skill
+            .bundle
+            .applicable_scenarios
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let skill_chain = skill
+            .bundle
+            .skill_chain
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let evidence_list = skill
+            .supporting_evidence
+            .iter()
+            .map(|s| format!("- {}", s))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let preconditions = skill.bundle.preconditions.join(", ");
+
+        let version_str = format!(
+            "{}.{}.{}",
+            skill.bundle.version.major, skill.bundle.version.minor, skill.bundle.version.patch
+        );
+
+        let risk_level_str = format!("{:?}", skill.bundle.risk_level);
+
+        let prompt = format!(
+            "You are distilling a reusable skill from execution traces in the Zero_Nine system.\n\
+            Generate a complete SKILL.md file based on the following metadata.\n\
+            \n\
+            ## Skill Metadata\n\
+            - Name: {name}\n\
+            - Description: {description}\n\
+            - Version: {version}\n\
+            - Risk Level: {risk_level}\n\
+            \n\
+            ## Applicable Scenarios\n\
+            {scenarios}\n\
+            \n\
+            ## Skill Chain (procedure steps)\n\
+            {skill_chain}\n\
+            \n\
+            ## Preconditions\n\
+            {preconditions}\n\
+            \n\
+            ## Supporting Evidence\n\
+            {evidence}\n\
+            \n\
+            ## Requirements\n\
+            1. Start with YAML frontmatter (between --- markers) containing: name, description, version, category, platforms=[claude-code, opencode], and metadata.zero-nine.layer\n\
+            2. Use the following sections: When to Use, Procedure, Skill Chain, Evidence & Validation, Best Practices, Anti-Patterns, Risks\n\
+            3. Enrich the content with practical guidance derived from the pattern data\n\
+            4. Do NOT include code blocks or markdown code fences in the output\n\
+            5. Keep it concise and actionable",
+            name = skill.bundle.name,
+            description = skill.bundle.description,
+            version = version_str,
+            risk_level = risk_level_str,
+            scenarios = scenario_list,
+            skill_chain = skill_chain,
+            preconditions = preconditions,
+            evidence = evidence_list,
+        );
+
+        // Try to create an AIClient from environment; fall back to template if unavailable
+        let client = match crate::ai_client::AIClient::from_env() {
+            Ok(c) => c,
+            Err(_) => {
+                // No API key configured — use template fallback
+                return self.distill_skill_markdown(skill);
+            }
+        };
+
+        match client
+            .send_message(
+                &prompt,
+                Some("You are a Zero_Nine skill distiller. Generate SKILL.md format content."),
+            )
+            .await
+        {
+            Ok(response) => {
+                let content = response.content.trim().to_string();
+                if content.starts_with("---") {
+                    Ok(content)
+                } else {
+                    // LLM didn't return valid frontmatter — use template fallback
+                    self.distill_skill_markdown(skill)
+                }
+            }
+            Err(_) => {
+                // LLM call failed — use template fallback
+                self.distill_skill_markdown(skill)
+            }
+        }
+    }
+
     /// Persist a distilled skill as SKILL.md via the SkillManager and register its version.
     ///
-    /// Only persists skills that meet the 3-10 sample rule (frequency >= 3, success_rate > 0.8).
-    pub fn persist_skill_to_disk(
+    /// When `enhance` is true, uses LLM to generate enriched content (falls back to template
+    /// if unavailable). Only persists skills that meet the 3-10 sample rule.
+    pub async fn persist_skill_to_disk(
         &self,
         skill_manager: &zn_spec::skill_manager::SkillManager,
         registry: &mut skill_registry::SkillRegistry,
         skill: &DistilledSkill,
+        enhance: bool,
     ) -> Result<()> {
-        let markdown = self.distill_skill_markdown(skill)?;
+        let markdown = if enhance {
+            self.distill_skill_markdown_with_llm(skill).await?
+        } else {
+            self.distill_skill_markdown(skill)?
+        };
         let category = match &skill.bundle.applicable_scenarios.first() {
             Some(s) => s
                 .split_whitespace()
@@ -1026,21 +1143,88 @@ Avoid the following:
         Ok(())
     }
 
+    /// Synchronous variant of `persist_skill_to_disk` using template-based content.
+    pub fn persist_skill_to_disk_sync(
+        &self,
+        skill_manager: &zn_spec::skill_manager::SkillManager,
+        registry: &mut skill_registry::SkillRegistry,
+        skill: &DistilledSkill,
+    ) -> Result<()> {
+        let markdown = self.distill_skill_markdown(skill)?;
+        let category = match &skill.bundle.applicable_scenarios.first() {
+            Some(s) => s
+                .split_whitespace()
+                .next()
+                .unwrap_or("evolution")
+                .to_lowercase(),
+            None => "evolution".to_string(),
+        };
+
+        let version_str = format!(
+            "{}.{}.{}",
+            skill.bundle.version.major, skill.bundle.version.minor, skill.bundle.version.patch
+        );
+
+        skill_manager.create(
+            &skill.bundle.name,
+            &markdown,
+            &category,
+            &skill.bundle.description,
+            &version_str,
+        )?;
+
+        let file_path = format!(".zero_nine/evolve/skills/{}/SKILL.md", skill.bundle.name);
+        registry.register_version(
+            &skill.bundle.name,
+            skill.bundle.version.clone(),
+            &skill_registry::content_hash(&markdown),
+            skill.confidence_score,
+            &file_path,
+        )?;
+
+        Ok(())
+    }
+
     /// Persist all skills that meet the 3-10 sample rule to disk.
-    pub fn persist_all_qualifying_skills(
+    ///
+    /// When `enhance` is true, uses LLM to generate enriched content.
+    pub async fn persist_all_qualifying_skills(
+        &self,
+        skill_manager: &zn_spec::skill_manager::SkillManager,
+        registry: &mut skill_registry::SkillRegistry,
+        enhance: bool,
+    ) -> Result<usize> {
+        let mut count = 0;
+        for skill in &self.distilled_skills {
+            if skill.bundle.usage_count >= 3
+                && skill.bundle.success_rate > 0.8
+                && self
+                    .persist_skill_to_disk(skill_manager, registry, skill, enhance)
+                    .await
+                    .is_ok()
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Persist all skills synchronously (template-based, no LLM enhancement).
+    /// Used by the execution loop where LLM calls are not available.
+    pub fn persist_all_qualifying_skills_sync(
         &self,
         skill_manager: &zn_spec::skill_manager::SkillManager,
         registry: &mut skill_registry::SkillRegistry,
     ) -> Result<usize> {
         let mut count = 0;
         for skill in &self.distilled_skills {
-            if skill.bundle.usage_count >= 3 && skill.bundle.success_rate > 0.8 {
-                if self
-                    .persist_skill_to_disk(skill_manager, registry, skill)
+            if skill.bundle.usage_count >= 3
+                && skill.bundle.success_rate > 0.8
+                && self
+                    .persist_skill_to_disk_sync(skill_manager, registry, skill)
                     .is_ok()
-                {
-                    count += 1;
-                }
+            {
+                count += 1;
             }
         }
         Ok(count)
@@ -1060,7 +1244,7 @@ pub fn create_default_distiller(project_root: &Path) -> Result<SkillDistiller> {
 mod tests {
     use super::*;
     use std::env::temp_dir;
-    use zn_types::{EvidenceKind, EvidenceRecord};
+    use zn_types::{EvidenceKind, EvidenceRecord, ExecutionOutcome};
 
     #[test]
     fn test_pattern_extractor() {
@@ -1107,6 +1291,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1172,6 +1357,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1181,10 +1367,7 @@ mod tests {
         let _ = distiller.distill_from_report(&report).unwrap();
 
         // Now get skills - they should have frequency >= 2
-        let skills = distiller.get_all_skills();
-        // Just check that we have skills, regardless of frequency threshold for distillation
-        // (The distiller internally merges, so we should have at least one entry)
-        let _skills = distiller.get_all_skills(); // may be empty due to frequency threshold in distillation
+        let _skills = distiller.get_all_skills();
 
         let _ = fs::remove_file(&tmp_file);
     }
@@ -1227,6 +1410,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1357,6 +1541,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1425,6 +1610,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1459,6 +1645,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1529,6 +1716,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1606,6 +1794,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1632,6 +1821,7 @@ mod tests {
             finish_branch_automation: None,
             execution_path: zn_types::SubagentExecutionPath::default(),
             bridge_address: None,
+            max_retries: None,
         };
 
         // Find a skill to apply
@@ -1709,6 +1899,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1783,6 +1974,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
         extractor.extract_from_report(&report);
@@ -1900,6 +2092,7 @@ mod tests {
             }),
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
 
@@ -1936,5 +2129,137 @@ mod tests {
         );
 
         let _ = fs::remove_file(&tmp_file);
+    }
+
+    #[tokio::test]
+    async fn test_llm_distill_falls_back_to_template() {
+        // Without API key configured, LLM distillation should fall back to template
+        let tmp_file = temp_dir().join("test_llm_fallback.ndjson");
+        let _ = fs::remove_file(&tmp_file);
+
+        let distiller = SkillDistiller::new(tmp_file.clone()).unwrap();
+
+        let skill = DistilledSkill {
+            pattern_id: "test-llm".to_string(),
+            bundle: zn_types::SkillBundle {
+                id: "test-llm-skill".to_string(),
+                name: "test-llm-skill".to_string(),
+                description: "A test skill for LLM fallback".to_string(),
+                version: zn_types::SkillVersion {
+                    major: 2,
+                    minor: 0,
+                    patch: 0,
+                },
+                applicable_scenarios: vec!["verify test results".to_string()],
+                skill_chain: vec!["run tests".to_string()],
+                preconditions: vec!["code compiles".to_string()],
+                artifacts: vec![],
+                success_rate: 0.9,
+                usage_count: 10,
+                risk_level: zn_types::ActionRiskLevel::Low,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                disabled_conditions: vec![],
+            },
+            confidence_score: 0.92,
+            supporting_evidence: vec!["test-output".to_string()],
+            usage_recommendations: vec![],
+            anti_patterns: vec![],
+        };
+
+        // Should not panic and should return valid frontmatter (via fallback)
+        let markdown = distiller
+            .distill_skill_markdown_with_llm(&skill)
+            .await
+            .unwrap();
+        assert!(
+            markdown.starts_with("---"),
+            "Expected YAML frontmatter in fallback output"
+        );
+
+        // Should parse correctly
+        let parsed = zn_spec::skill_format::SkillFile::parse(&markdown);
+        assert!(parsed.is_ok());
+
+        let _ = fs::remove_file(&tmp_file);
+    }
+
+    #[test]
+    fn test_distill_skill_markdown_snapshot() {
+        let tmp_file = temp_dir().join("test_md_snap.ndjson");
+        let _ = fs::remove_file(&tmp_file);
+        let distiller = SkillDistiller::new(tmp_file.clone()).unwrap();
+
+        let skill = DistilledSkill {
+            pattern_id: "test-skill-snapshot".to_string(),
+            bundle: SkillBundle {
+                id: "test-skill-snapshot".to_string(),
+                name: "Test Skill".to_string(),
+                version: zn_types::SkillVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                },
+                description: "A snapshot test skill".to_string(),
+                applicable_scenarios: vec!["testing".to_string()],
+                preconditions: vec![],
+                disabled_conditions: vec![],
+                risk_level: zn_types::ActionRiskLevel::Low,
+                skill_chain: vec![],
+                artifacts: vec![],
+                usage_count: 10,
+                success_rate: 0.95,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            confidence_score: 0.90,
+            supporting_evidence: vec!["test-output".to_string()],
+            usage_recommendations: vec!["Use for build tasks".to_string()],
+            anti_patterns: vec![],
+        };
+
+        let markdown = distiller.distill_skill_markdown(&skill).unwrap();
+        insta::assert_snapshot!(markdown);
+
+        let _ = fs::remove_file(&tmp_file);
+    }
+
+    #[test]
+    fn test_distilled_skill_snapshot() {
+        let skill = DistilledSkill {
+            pattern_id: "auth-pattern".to_string(),
+            bundle: SkillBundle {
+                id: "auth-pattern".to_string(),
+                name: "Auth Pattern".to_string(),
+                version: zn_types::SkillVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                },
+                description: "Detects and extracts authentication patterns".to_string(),
+                applicable_scenarios: vec!["security".to_string()],
+                preconditions: vec![],
+                disabled_conditions: vec![],
+                risk_level: zn_types::ActionRiskLevel::Medium,
+                skill_chain: vec![],
+                artifacts: vec![],
+                usage_count: 5,
+                success_rate: 0.88,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            confidence_score: 0.85,
+            supporting_evidence: vec!["evidence-1".to_string()],
+            usage_recommendations: vec![],
+            anti_patterns: vec!["no-plain-text-passwords".to_string()],
+        };
+        insta::with_settings!({
+            redactions => vec![
+                (".bundle.created_at", insta::dynamic_redaction(|_, _| "[timestamp]")),
+                (".bundle.updated_at", insta::dynamic_redaction(|_, _| "[timestamp]")),
+            ],
+        }, {
+            insta::assert_json_snapshot!(skill);
+        });
     }
 }

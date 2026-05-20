@@ -1,0 +1,11 @@
+target/
+.git/
+.gitignore
+*.snap
+*.snap.new
+.claude/
+.opencode/
+.zero_nine/
+demo_project/
+docs/
+adapters/

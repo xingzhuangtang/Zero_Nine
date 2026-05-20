@@ -33,4 +33,4 @@ assert_cmd = "2"
 chrono.workspace = true
 predicates = "3"
 tempfile = "3"
-zn-types = { path = "../zn-types" }
+insta.workspace = true

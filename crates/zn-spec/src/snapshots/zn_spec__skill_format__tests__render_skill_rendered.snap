@@ -1,0 +1,34 @@
+---
+source: crates/zn-spec/src/skill_format.rs
+assertion_line: 468
+expression: skill.render()
+---
+---
+name: zero-nine-tdd-cycle
+description: Test-Driven Development cycle
+version: 1.0.0
+category: execution
+platforms:
+- claude-code
+- opencode
+metadata: {}
+
+---
+
+# TDD Cycle Skill
+
+## When to Use
+- Task mode is `tdd_cycle`
+- Implementation requires test coverage
+
+## Procedure
+1. Read task contract
+2. Generate failing test first
+3. Implement minimum code to pass
+4. Run verification
+
+## Pitfalls
+- Don't write tests after implementation
+
+## Verification
+- `cargo test --all-targets` must pass

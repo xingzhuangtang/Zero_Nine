@@ -7,32 +7,27 @@
 //! status streaming, and evidence submission from agents.
 
 use anyhow::Result;
-use tokio::sync::mpsc;
-use tonic::Request;
-use zn_bridge::proto::{
-    task_dispatch_server::TaskDispatchServer,
-    task_status_server::TaskStatusServer,
-    evidence_stream_server::EvidenceStreamServer,
-    DispatchRequest, DispatchResponse, DispatchStatus,
-    CancelRequest, CancelResponse,
-    StatusRequest, StatusResponse, StatusUpdate,
-    EvidenceRequest, EvidenceRecord, SubmitEvidenceRequest, SubmitEvidenceResponse,
-    TaskState,
-};
-use zn_bridge::server::{BridgeState, TaskState as ServerTaskState};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request;
+use zn_bridge::proto::{
+    evidence_stream_server::EvidenceStreamServer, task_dispatch_server::TaskDispatchServer,
+    task_status_server::TaskStatusServer, AgentRegistration, AgentRegistrationResponse,
+    CancelRequest, CancelResponse, DispatchRequest,
+    DispatchResponse, DispatchStatus, EvidenceRecord, EvidenceRequest, StatusRequest,
+    StatusResponse, StatusUpdate, SubmitEvidenceRequest, SubmitEvidenceResponse, TaskState,
+};
+use zn_bridge::server::{BridgeState, TaskState as ServerTaskState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    use tracing_subscriber::FmtSubscriber;
     use tracing::Level;
+    use tracing_subscriber::FmtSubscriber;
 
     // Initialize logging
-    let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .init();
+    FmtSubscriber::builder().with_max_level(Level::INFO).init();
 
     let addr = "127.0.0.1:50051".parse()?;
     tracing::info!("Starting example gRPC bridge server on {}", addr);
@@ -72,7 +67,11 @@ impl zn_bridge::proto::task_dispatch_server::TaskDispatch for MockBridgeService 
         request: Request<DispatchRequest>,
     ) -> Result<tonic::Response<DispatchResponse>, tonic::Status> {
         let req = request.into_inner();
-        tracing::info!("DispatchTask: task_id={}, proposal_id={}", req.task_id, req.proposal_id);
+        tracing::info!(
+            "DispatchTask: task_id={}, proposal_id={}",
+            req.task_id,
+            req.proposal_id
+        );
 
         let agent_task_id = format!("mock-agent-{}", uuid::Uuid::new_v4().simple());
 
@@ -102,7 +101,7 @@ impl zn_bridge::proto::task_dispatch_server::TaskDispatch for MockBridgeService 
 
                 let mut tasks = state.tasks.write().await;
                 if let Some(task_state) = tasks.get_mut(&task_id) {
-                    task_state.progress_percent = progress as i32;
+                    task_state.progress_percent = progress;
                     if progress == 100 {
                         task_state.status = TaskState::Completed;
                         task_state.summary = "Task completed by mock agent".to_string();
@@ -132,6 +131,20 @@ impl zn_bridge::proto::task_dispatch_server::TaskDispatch for MockBridgeService 
             message: "Task cancelled".to_string(),
         }))
     }
+
+    async fn register_agent(
+        &self,
+        request: Request<AgentRegistration>,
+    ) -> Result<tonic::Response<AgentRegistrationResponse>, tonic::Status> {
+        let req = request.into_inner();
+        tracing::info!("RegisterAgent: agent_id={}", req.agent_id);
+
+        Ok(tonic::Response::new(AgentRegistrationResponse {
+            agent_id: req.agent_id,
+            success: true,
+            message: "Agent registered".to_string(),
+        }))
+    }
 }
 
 #[tonic::async_trait]
@@ -154,7 +167,10 @@ impl zn_bridge::proto::task_status_server::TaskStatus for MockBridgeService {
                 error_message: String::new(),
             }))
         } else {
-            Err(tonic::Status::not_found(format!("Task {} not found", req.task_id)))
+            Err(tonic::Status::not_found(format!(
+                "Task {} not found",
+                req.task_id
+            )))
         }
     }
 
@@ -171,7 +187,17 @@ impl zn_bridge::proto::task_status_server::TaskStatus for MockBridgeService {
 
         // Store sender for later updates
         {
-            let mut senders: std::collections::HashMap<_, mpsc::Sender<Result<StatusUpdate, tonic::Status>>> = self.state.status_senders.write().await.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let mut senders: std::collections::HashMap<
+                _,
+                mpsc::Sender<Result<StatusUpdate, tonic::Status>>,
+            > = self
+                .state
+                .status_senders
+                .write()
+                .await
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             senders.insert(req.task_id.clone(), tx.clone());
 
             let mut actual_senders = self.state.status_senders.write().await;
@@ -192,13 +218,15 @@ impl zn_bridge::proto::task_status_server::TaskStatus for MockBridgeService {
                 if let Some(task_state) = tasks.get(&task_id) {
                     let progress = task_state.progress_percent;
                     if progress > last_progress {
-                        let _ = tx.send(Ok(StatusUpdate {
-                            state: task_state.status as i32,
-                            summary: task_state.summary.clone(),
-                            progress_percent: progress,
-                            new_artifacts: task_state.artifacts.clone(),
-                            timestamp: chrono::Utc::now().timestamp(),
-                        })).await;
+                        let _ = tx
+                            .send(Ok(StatusUpdate {
+                                state: task_state.status as i32,
+                                summary: task_state.summary.clone(),
+                                progress_percent: progress,
+                                new_artifacts: task_state.artifacts.clone(),
+                                timestamp: chrono::Utc::now().timestamp(),
+                            }))
+                            .await;
                         last_progress = progress;
                     }
 
@@ -263,9 +291,14 @@ impl zn_bridge::proto::evidence_stream_server::EvidenceStream for MockBridgeServ
         request: Request<SubmitEvidenceRequest>,
     ) -> Result<tonic::Response<SubmitEvidenceResponse>, tonic::Status> {
         let req = request.into_inner();
-        tracing::info!("SubmitEvidence: task_id={}, count={}", req.task_id, req.evidence.len());
+        tracing::info!(
+            "SubmitEvidence: task_id={}, count={}",
+            req.task_id,
+            req.evidence.len()
+        );
 
-        let evidence_paths: Vec<String> = req.evidence
+        let evidence_paths: Vec<String> = req
+            .evidence
             .iter()
             .filter(|e| !e.file_path.is_empty())
             .map(|e| e.file_path.clone())

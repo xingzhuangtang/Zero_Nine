@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use zn_types::HostKind;
 
 pub mod github;
-pub use github::{read_github_issues, create_pull_request, write_issue_comment, write_execution_summary};
+pub use github::{
+    create_pull_request, read_github_issues, write_execution_summary, write_issue_comment,
+};
 
 pub fn detect_host(explicit: Option<&str>) -> HostKind {
     match explicit.unwrap_or_default().to_lowercase().as_str() {

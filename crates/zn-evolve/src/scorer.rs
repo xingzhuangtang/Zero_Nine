@@ -77,7 +77,7 @@ impl SkillScorer {
             if let Ok(eval) = serde_json::from_str::<SkillEvaluation>(&line) {
                 self.evaluations
                     .entry(eval.skill_name.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(eval);
             }
         }
@@ -118,7 +118,7 @@ impl SkillScorer {
 
         self.evaluations
             .entry(skill_name.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(evaluation);
 
         // Trim if needed
@@ -356,7 +356,7 @@ fn find_common_terms(notes: &[&str]) -> Vec<String> {
         .map(|(word, _)| word)
         .collect();
 
-    common.sort_by(|a, b| b.len().cmp(&a.len())); // Longer terms first
+    common.sort_by_key(|w| std::cmp::Reverse(w.len())); // Longer terms first
     common.truncate(3); // Top 3 terms
     common
 }

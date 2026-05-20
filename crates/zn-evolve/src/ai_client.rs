@@ -184,7 +184,7 @@ fn sanitize_api_error(text: &str) -> String {
         text.to_string()
     };
     // Remove newlines to prevent log injection
-    truncated.replace('\n', " ").replace('\r', " ")
+    truncated.replace(['\n', '\r'], " ")
 }
 
 impl AIClient {
@@ -208,7 +208,7 @@ impl AIClient {
                 }
             }
             AIProvider::Custom { api_key, .. } => {
-                if api_key.as_ref().map_or(false, |k| k.is_empty()) {
+                if matches!(api_key.as_deref(), Some("")) {
                     return Err(anyhow::anyhow!("Custom provider API key is empty."));
                 }
             }
@@ -294,7 +294,7 @@ impl AIClient {
         // 发送请求
         let response = self
             .client
-            .post(&format!("{}/messages", base_url))
+            .post(format!("{}/messages", base_url))
             .headers(headers)
             .json(&request_body)
             .send()

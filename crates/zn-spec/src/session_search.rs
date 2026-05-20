@@ -45,6 +45,7 @@ pub struct SessionSummary {
 
 /// Session search engine
 pub struct SessionSearch {
+    #[allow(dead_code)]
     db_path: PathBuf,
     conn: Connection,
 }
@@ -374,7 +375,7 @@ mod tests {
         let tmp_file = temp_dir().join("zn_session_test.db");
         let _ = fs::remove_file(&tmp_file);
 
-        let search = SessionSearch::new(tmp_file.clone()).unwrap();
+        let _search = SessionSearch::new(tmp_file.clone()).unwrap();
         assert!(tmp_file.exists());
 
         let _ = fs::remove_file(&tmp_file);

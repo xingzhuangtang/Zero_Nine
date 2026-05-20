@@ -40,7 +40,9 @@ impl ZeroNineMcpServer {
         vec![
             McpToolDefinition {
                 name: "zero_nine_status".to_string(),
-                description: "Get current Zero_Nine project status including proposal, tasks, and loop state".to_string(),
+                description:
+                    "Get current Zero_Nine project status including proposal, tasks, and loop state"
+                        .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -48,7 +50,8 @@ impl ZeroNineMcpServer {
             },
             McpToolDefinition {
                 name: "zero_nine_proposal".to_string(),
-                description: "Get details of a specific proposal or the latest proposal".to_string(),
+                description: "Get details of a specific proposal or the latest proposal"
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -172,7 +175,8 @@ impl ZeroNineMcpServer {
                 .filter(|e| e.path().is_dir())
                 .collect();
             entries.sort_by_key(|e| e.file_name());
-            entries.last()
+            entries
+                .last()
                 .map(|e| e.path())
                 .ok_or_else(|| anyhow::anyhow!("No proposals found"))?
                 .clone()
@@ -263,7 +267,10 @@ impl ZeroNineMcpServer {
             let title = if proposal_json.exists() {
                 let content = std::fs::read_to_string(&proposal_json)?;
                 let proposal: Value = serde_json::from_str(&content)?;
-                proposal["goal"].as_str().unwrap_or(&proposal_id).to_string()
+                proposal["goal"]
+                    .as_str()
+                    .unwrap_or(&proposal_id)
+                    .to_string()
             } else {
                 proposal_id.clone()
             };
@@ -290,7 +297,10 @@ impl ZeroNineMcpServer {
         };
 
         if !memory_file.exists() {
-            return Err(anyhow::anyhow!("Memory file not found: {}", memory_file.display()));
+            return Err(anyhow::anyhow!(
+                "Memory file not found: {}",
+                memory_file.display()
+            ));
         }
 
         let content = std::fs::read_to_string(&memory_file)?;

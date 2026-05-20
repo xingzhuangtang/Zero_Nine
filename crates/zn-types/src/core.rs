@@ -242,7 +242,7 @@ pub struct MountSpec {
 }
 
 /// Environment specification for container sandbox execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvironmentSpec {
     #[serde(default)]
     pub base_image: String,
@@ -256,19 +256,6 @@ pub struct EnvironmentSpec {
     pub network_policy: NetworkPolicy,
     #[serde(default)]
     pub resource_limits: ResourceLimits,
-}
-
-impl Default for EnvironmentSpec {
-    fn default() -> Self {
-        Self {
-            base_image: String::new(),
-            working_dir: String::new(),
-            env_vars: std::collections::HashMap::new(),
-            mount_points: Vec::new(),
-            network_policy: NetworkPolicy::default(),
-            resource_limits: ResourceLimits::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

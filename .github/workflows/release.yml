@@ -105,3 +105,32 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Publish library crates to crates.io ────────────────────────────────────
+  publish:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish zn-types
+        run: cargo publish -p zn-types --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-spec
+        run: cargo publish -p zn-spec --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-host
+        run: cargo publish -p zn-host --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-bridge
+        run: cargo publish -p zn-bridge --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-exec
+        run: cargo publish -p zn-exec --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-evolve
+        run: cargo publish -p zn-evolve --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-loop
+        run: cargo publish -p zn-loop --token ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish zn-sdk
+        run: cargo publish -p zn-sdk --token ${{ secrets.CRATES_IO_TOKEN }}

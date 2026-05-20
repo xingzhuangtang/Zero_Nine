@@ -151,7 +151,6 @@ fn fetch_local_issues(
 /// Parse local issue markdown format
 fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
     let mut title = String::new();
-    let mut description = String::new();
     let mut acceptance_criteria = Vec::new();
     let mut constraints = Vec::new();
     let mut labels = Vec::new();
@@ -201,7 +200,7 @@ fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
         }
     }
 
-    description = description_lines.join("\n").trim().to_string();
+    let description = description_lines.join("\n").trim().to_string();
 
     Ok(LocalIssue {
         title,
@@ -213,6 +212,7 @@ fn parse_local_issue_markdown(content: &str) -> Result<LocalIssue> {
 }
 
 /// Convert GitHub Issue to Proposal
+#[allow(clippy::field_reassign_with_default)]
 fn convert_github_issue_to_proposal(
     project_root: &Path,
     issue: &GitHubIssue,
@@ -281,6 +281,7 @@ fn convert_github_issue_to_proposal(
 }
 
 /// Convert local issue to Proposal
+#[allow(clippy::field_reassign_with_default)]
 fn convert_local_issue_to_proposal(
     project_root: &Path,
     issue: &LocalIssue,
@@ -294,6 +295,7 @@ fn convert_local_issue_to_proposal(
     let uuid_str = format!("{}", Uuid::new_v4().simple());
     let proposal_id = format!("proposal-{}-{}", issue_id, &uuid_str[..8]);
 
+    #[allow(clippy::field_reassign_with_default)]
     let mut proposal = Proposal::default();
     proposal.id = proposal_id;
     proposal.title = issue.title.clone();

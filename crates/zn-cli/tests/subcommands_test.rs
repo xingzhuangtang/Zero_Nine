@@ -266,3 +266,16 @@ fn test_subagent_history_empty() {
     // May fail with exit 1 but shouldn't panic
     let _stderr = String::from_utf8_lossy(&result.stderr);
 }
+
+#[test]
+fn test_init_manifest_snapshot() {
+    let dir = TempDir::new().unwrap();
+    init_project(dir.path());
+
+    let manifest_path = dir.path().join(".zero_nine/manifest.json");
+    assert!(manifest_path.exists());
+
+    let content = std::fs::read_to_string(&manifest_path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    insta::assert_json_snapshot!(value);
+}

@@ -1,0 +1,23 @@
+---
+source: crates/zn-spec/src/lib.rs
+assertion_line: 2296
+expression: value
+---
+{
+  "bridge_address": null,
+  "default_host": "terminal",
+  "github_repo": null,
+  "name": "Zero_Nine",
+  "policy": {
+    "auto_evolve": true,
+    "max_elapsed_seconds": 3600,
+    "max_retries": 2,
+    "max_total_iterations": 50,
+    "verify_before_complete": true
+  },
+  "skill_dirs": [
+    ".claude/skills",
+    ".opencode/skills"
+  ],
+  "version": "0.1.0"
+}

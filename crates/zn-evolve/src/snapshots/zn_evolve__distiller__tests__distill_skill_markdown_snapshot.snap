@@ -1,0 +1,58 @@
+---
+source: crates/zn-evolve/src/distiller.rs
+assertion_line: 2218
+expression: markdown
+---
+---
+name: Test Skill
+description: A snapshot test skill
+version: 1.0.0
+category: evolution
+platforms: [claude-code, opencode]
+metadata:
+  zero-nine:
+    layer: evolution
+---
+
+# Test Skill
+
+## When to Use
+
+A snapshot test skill
+
+### Applicable Scenarios
+
+- testing
+
+## Procedure
+
+1. Review the preconditions: 
+2. Follow the skill chain in order
+3. Collect all required artifacts
+4. Verify against the expected outcomes
+
+### Skill Chain
+
+
+
+## Evidence & Validation
+
+- test-output
+
+## Best Practices
+
+- Use for build tasks
+
+## Anti-Patterns
+
+Avoid the following:
+
+
+## Risks
+
+- Risk level: Low
+- Review the risk notes before execution
+
+### Risk Details
+
+Review execution logs for additional context.

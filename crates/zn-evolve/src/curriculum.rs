@@ -142,7 +142,7 @@ impl CurriculumManager {
     }
 
     /// Advanced difficulty adaptation using ELO-style rating
-    pub fn adapt_difficulty_elo(&mut self, task_id: &str, success: bool, actual_difficulty: f32) {
+    pub fn adapt_difficulty_elo(&mut self, task_id: &str, success: bool, _actual_difficulty: f32) {
         let current_rating = self
             .curriculum
             .task_difficulty
@@ -151,7 +151,7 @@ impl CurriculumManager {
             .unwrap_or(0.5);
 
         // K-factor: how much ratings change (higher for new tasks, lower for established)
-        let k_factor = if self.curriculum.mastery_level.get(task_id).is_some() {
+        let k_factor = if self.curriculum.mastery_level.contains_key(task_id) {
             0.1 // Established task
         } else {
             0.2 // New task

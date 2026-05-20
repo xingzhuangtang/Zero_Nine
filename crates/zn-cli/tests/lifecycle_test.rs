@@ -41,7 +41,7 @@ fn seed_ready_session(dir: &Path, goal: &str, host: HostKind) {
     let json = serde_json::to_string_pretty(&session).unwrap();
     fs::write(sessions_dir.join("test-session.json"), &json).unwrap();
     fs::write(dir.join(".zero_nine/brainstorm/latest-session.json"), &json).unwrap();
-    fs::write(dir.join(".zero_nine/brainstorm/latest-session.md"), &goal).unwrap();
+    fs::write(dir.join(".zero_nine/brainstorm/latest-session.md"), goal).unwrap();
 }
 
 // --- Init tests ---

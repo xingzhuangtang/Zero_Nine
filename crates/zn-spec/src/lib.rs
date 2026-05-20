@@ -183,9 +183,9 @@ pub fn create_requirement_packet(goal: &str) -> RequirementPacket {
     RequirementPacket {
         schema_version: default_spec_schema_version(),
         user_goal: goal.to_string(),
-        problem_statement: format!(
+        problem_statement:
             "Transform the user request into a controllable engineering workflow that can start from one sentence and continue through spec, execution, loop orchestration, and evolution."
-        ),
+                .to_string(),
         scope_in: vec![
             "Capture the real user intent behind the initial goal.".to_string(),
             "Produce persistent specification artifacts for later execution.".to_string(),
@@ -373,6 +373,7 @@ fn create_proposal_from_packet(
             parent_span_id: None,
             latency_ms: None,
             metadata: None,
+            agent_id: None,
         },
     )?;
     Ok(proposal)
@@ -2275,5 +2276,50 @@ mod tests {
         // Emergency push -> should skip this rule and default to Allow
         let decision = engine.evaluate_action("git.push.emergency", &[]);
         assert!(matches!(decision, zn_types::PolicyDecision::Allow));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_manifest_json() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = ProjectManifest::default();
+        save_manifest(tmp.path(), &manifest).unwrap();
+        let content = std::fs::read_to_string(tmp.path().join(".zero_nine/manifest.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        insta::assert_json_snapshot!(value);
+    }
+
+    #[test]
+    fn test_render_tasks_markdown() {
+        let tasks = vec![
+            TaskItem {
+                id: "1".to_string(),
+                title: "Setup project".to_string(),
+                description: "Initialize the project".to_string(),
+                status: TaskStatus::Pending,
+                depends_on: vec![],
+                kind: None,
+                contract: TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+            TaskItem {
+                id: "2".to_string(),
+                title: "Write tests".to_string(),
+                description: "Write unit tests".to_string(),
+                status: TaskStatus::Completed,
+                depends_on: vec!["1".to_string()],
+                kind: None,
+                contract: TaskContract::default(),
+                max_retries: None,
+                preconditions: vec![],
+            },
+        ];
+        insta::assert_snapshot!(render_tasks_markdown(&tasks));
     }
 }

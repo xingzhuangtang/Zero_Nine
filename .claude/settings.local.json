@@ -24,7 +24,19 @@
       "Bash(grep -v \"^--$\")",
       "Skill(update-config)",
       "Bash(bc)",
-      "Bash(grep -c \"test$\")"
+      "Bash(grep -c \"test$\")",
+      "Bash(grep -rn \"--resume\\\\|resume.*brainstorm\" /Users/tangxingzhuang/Freedom/Zero_Nine/crates/ --include=\"*.rs\")",
+      "Bash(git status *)",
+      "Bash(grep -A2 \"writing \\\\`&PathBuf\\\\`\")",
+      "Bash(cargo install *)",
+      "Read(//private/tmp/zn-dryrun-test/**)",
+      "Bash(zero-nine resume *)",
+      "Bash(zero-nine distill *)",
+      "Bash(GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=10 git push *)",
+      "Bash(grep -v \"zn-exec\\\\|zn-loop\\\\|zn-spec\\\\|zn-host\\\\|zn-cli.*unused variable: \\\\`now\\\\`\")",
+      "Bash(gh pr *)",
+      "Bash(cargo check *)",
+      "Bash(grep -n \"^}$\" /Users/tangxingzhuang/Freedom/Zero_Nine/crates/zn-evolve/src/distiller.rs)"
     ]
   },
   "hooks": {

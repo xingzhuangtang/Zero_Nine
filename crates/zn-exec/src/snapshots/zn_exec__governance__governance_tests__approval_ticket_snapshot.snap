@@ -1,0 +1,19 @@
+---
+source: crates/zn-exec/src/governance.rs
+assertion_line: 2086
+expression: ticket
+---
+{
+  "id": "[uuid]",
+  "action": "GitMerge",
+  "risk_level": "critical",
+  "description": "Merge to main",
+  "expected_outcome": "",
+  "status": "pending",
+  "created_at": "[timestamp]",
+  "resolved_at": null,
+  "approver": null,
+  "rejection_reason": null,
+  "proposal_id": null,
+  "task_id": null
+}

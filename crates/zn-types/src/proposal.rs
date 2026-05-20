@@ -89,7 +89,6 @@ pub enum CriterionStatus {
     Blocked,
 }
 
-
 /// M1-1: Risk 结构 (蓝图 M1-1)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Risk {
@@ -402,10 +401,13 @@ impl TaskGraph {
         if errors.is_empty() {
             let cycles = self.detect_cycles();
             if !cycles.is_empty() {
-                let involved: Vec<String> = cycles.iter().flatten().cloned().collect();
+                let mut involved: Vec<String> = cycles.iter().flatten().cloned().collect();
+                involved.sort();
+                let mut cycle_repr: Vec<String> = cycles[0].clone();
+                cycle_repr.sort();
                 errors.push(DagValidationError {
                     error_code: DagErrorCode::CircularDependency,
-                    message: format!("Circular dependency detected: {}", cycles[0].join(" -> ")),
+                    message: format!("Circular dependency detected: {}", cycle_repr.join(" -> ")),
                     involved_task_ids: involved,
                 });
             }
@@ -437,9 +439,7 @@ impl TaskGraph {
         for task in &self.tasks {
             for dep in &task.depends_on {
                 if in_degree.contains_key(dep) {
-                    adj.entry(dep.clone())
-                        .or_default()
-                        .push(task.id.clone());
+                    adj.entry(dep.clone()).or_default().push(task.id.clone());
                     *in_degree.entry(task.id.clone()).or_insert(0) += 1;
                 }
             }

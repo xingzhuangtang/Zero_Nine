@@ -61,7 +61,9 @@ pub fn proto_execution_mode_to_zn(mode: proto::ExecutionMode) -> zn_types::Execu
 // WorkspaceStrategy conversion
 // ============================================================================
 
-pub fn zn_workspace_strategy_to_proto(strategy: zn_types::WorkspaceStrategy) -> proto::WorkspaceStrategy {
+pub fn zn_workspace_strategy_to_proto(
+    strategy: zn_types::WorkspaceStrategy,
+) -> proto::WorkspaceStrategy {
     match strategy {
         zn_types::WorkspaceStrategy::InPlace => proto::WorkspaceStrategy::InPlace,
         zn_types::WorkspaceStrategy::GitWorktree => proto::WorkspaceStrategy::GitWorktree,
@@ -69,7 +71,9 @@ pub fn zn_workspace_strategy_to_proto(strategy: zn_types::WorkspaceStrategy) -> 
     }
 }
 
-pub fn proto_workspace_strategy_to_zn(strategy: proto::WorkspaceStrategy) -> zn_types::WorkspaceStrategy {
+pub fn proto_workspace_strategy_to_zn(
+    strategy: proto::WorkspaceStrategy,
+) -> zn_types::WorkspaceStrategy {
     match strategy {
         proto::WorkspaceStrategy::Unknown => zn_types::WorkspaceStrategy::InPlace,
         proto::WorkspaceStrategy::InPlace => zn_types::WorkspaceStrategy::InPlace,
@@ -201,7 +205,10 @@ mod tests {
     fn test_workspace_strategy_conversion() {
         let strategy = zn_types::WorkspaceStrategy::GitWorktree;
         let proto_strategy = zn_workspace_strategy_to_proto(strategy);
-        assert_eq!(proto_strategy as i32, proto::WorkspaceStrategy::GitWorktree as i32);
+        assert_eq!(
+            proto_strategy as i32,
+            proto::WorkspaceStrategy::GitWorktree as i32
+        );
     }
 
     #[test]

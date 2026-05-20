@@ -1,6 +1,6 @@
 pub mod cron_scheduler;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
 use std::collections::HashSet;
@@ -28,9 +28,9 @@ use zn_types::{
     BrainstormSession, BrainstormVerdict, ExecutionEnvelope, ExecutionOutcome, ExecutionPlan,
     ExecutionReport, FailureCategory, FailureClassification, FailureSeverity, HostKind, LoopStage,
     ProjectManifest, Proposal, ProposalStatus, RuntimeEvent, SafetyEvent, SpecValidationSeverity,
-    StateTransition, TaskStatus,
+    StateTransition, TaskComplexityLevel, TaskComplexityProfile, TaskStatus,
 };
-use zn_types::{CompensationAction, CompensationType, EvolutionCandidate, EvolutionKind};
+use zn_types::{CompensationAction, CompensationType};
 
 /// Abstraction for terminal input — decouples zn-loop from rustyline.
 pub trait TerminalInput {
@@ -39,8 +39,10 @@ pub trait TerminalInput {
 
 pub fn initialize_project(project_root: &Path, host: HostKind) -> Result<()> {
     ensure_layout(project_root)?;
-    let mut manifest = ProjectManifest::default();
-    manifest.default_host = host;
+    let manifest = ProjectManifest {
+        default_host: host,
+        ..Default::default()
+    };
     save_manifest(project_root, &manifest)?;
     append_event(
         project_root,
@@ -354,7 +356,7 @@ pub fn resume<T: TerminalInput>(
             );
         }
     }
-    Ok(status_summary(project_root)?)
+    status_summary(project_root)
 }
 
 /// Dry-run: generate an execution plan for a goal without executing.
@@ -748,10 +750,10 @@ fn execute_proposal(
     let bridge_address = manifest.bridge_address.clone();
     let execution_path = std::env::var("ZN_EXECUTION_PATH")
         .ok()
-        .and_then(|s| match s.as_str() {
-            "bridge" => Some(zn_types::SubagentExecutionPath::Bridge),
-            "hybrid" => Some(zn_types::SubagentExecutionPath::Hybrid),
-            _ => Some(zn_types::SubagentExecutionPath::Cli),
+        .map(|s| match s.as_str() {
+            "bridge" => zn_types::SubagentExecutionPath::Bridge,
+            "hybrid" => zn_types::SubagentExecutionPath::Hybrid,
+            _ => zn_types::SubagentExecutionPath::Cli,
         })
         .unwrap_or_default();
 
@@ -872,7 +874,7 @@ fn execute_proposal(
             }
         }
 
-        let Some(schedule) = choose_next_ready_batch(&proposal.tasks, max_retries) else {
+        let Some(schedule) = choose_next_ready_batch(&proposal.tasks, max_retries, None) else {
             break;
         };
         if schedule.selected_indices.is_empty() {
@@ -1578,6 +1580,7 @@ fn infrastructure_failure_report(
         tri_role_verdict: None,
         authorization_ticket_id: None,
         authorized_by: None,
+        governance_summary: None,
     }
 }
 
@@ -1591,7 +1594,11 @@ struct ReadyBatch {
     runnable_tasks: Vec<String>,
 }
 
-fn choose_next_ready_batch(tasks: &[zn_types::TaskItem], max_retries: u8) -> Option<ReadyBatch> {
+fn choose_next_ready_batch(
+    tasks: &[zn_types::TaskItem],
+    max_retries: u8,
+    complexity_profiles: Option<&std::collections::HashMap<String, TaskComplexityProfile>>,
+) -> Option<ReadyBatch> {
     let completed: HashSet<&str> = tasks
         .iter()
         .filter(|task| matches!(task.status, TaskStatus::Completed))
@@ -1629,7 +1636,10 @@ fn choose_next_ready_batch(tasks: &[zn_types::TaskItem], max_retries: u8) -> Opt
         return None;
     }
 
-    runnable.sort_by_key(|(_, task)| scheduler_priority(task));
+    runnable.sort_by_key(|(_, task)| {
+        let profile = complexity_profiles.as_ref().and_then(|p| p.get(&task.id));
+        scheduler_priority_with_complexity(task, profile)
+    });
     let parallel_window = scheduler_parallel_window(tasks);
     let max_worktree_slots = scheduler_worktree_slots(tasks);
     let max_finish_slots = 1usize;
@@ -1828,6 +1838,24 @@ fn scheduler_priority(task: &zn_types::TaskItem) -> (u8, u8, String) {
     (retry_bias, resource_bias, task.id.clone())
 }
 
+fn scheduler_priority_with_complexity(
+    task: &zn_types::TaskItem,
+    profile: Option<&TaskComplexityProfile>,
+) -> (u8, u8, String) {
+    let (retry_bias, resource_bias, id) = scheduler_priority(task);
+
+    let complexity_bias = match profile {
+        Some(p) => match p.complexity_level {
+            TaskComplexityLevel::Simple => 0,
+            TaskComplexityLevel::Medium => 1,
+            TaskComplexityLevel::Complex => 2,
+        },
+        None => 0,
+    };
+
+    (retry_bias, resource_bias + complexity_bias, id)
+}
+
 fn save_execution_envelope(
     project_root: &Path,
     proposal_id: &str,
@@ -2024,7 +2052,7 @@ fn sync_proposal_to_github(project_root: &Path, proposal: &Proposal) -> Result<(
 }
 
 /// M5: Execute compensation actions to clean up after failed multi-role chains.
-fn execute_compensation_actions(project_root: &Path, proposal: &Proposal) -> Result<()> {
+fn execute_compensation_actions(project_root: &Path, _proposal: &Proposal) -> Result<()> {
     // Collect compensation actions from failed tasks' tri_role_verdict
     let runtime_dir = project_root.join(".zero_nine/runtime/subagents");
     if !runtime_dir.exists() {
@@ -2361,7 +2389,7 @@ mod tests {
     use std::env::temp_dir;
     use zn_types::{
         ExecutionEnvelope, ExecutionMode, ExecutionOutcome, ExecutionPlan, ExecutionReport,
-        LoopState, QualityGate, SubagentExecutionPath, TaskItem, WorkspaceStrategy,
+        LoopState, SubagentExecutionPath, TaskItem, WorkspaceStrategy,
     };
 
     // ---- Tier 1: Pure functions ----
@@ -2403,7 +2431,7 @@ mod tests {
             max_retries: None,
             preconditions: vec![],
         };
-        let (retry, resource, _) = scheduler_priority(&t);
+        let (retry, _resource, _) = scheduler_priority(&t);
         assert_eq!(retry, 0); // highest priority
     }
 
@@ -2508,19 +2536,17 @@ mod tests {
 
     #[test]
     fn test_scheduler_worktree_slots_without_finish() {
-        let tasks = vec![
-            TaskItem {
-                id: "t1".into(),
-                title: "Test".into(),
-                description: "".into(),
-                status: TaskStatus::Pending,
-                depends_on: vec![],
-                kind: Some("execution".into()),
-                contract: zn_types::TaskContract::default(),
-                max_retries: None,
-                preconditions: vec![],
-            },
-        ];
+        let tasks = vec![TaskItem {
+            id: "t1".into(),
+            title: "Test".into(),
+            description: "".into(),
+            status: TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("execution".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: None,
+            preconditions: vec![],
+        }];
         assert_eq!(scheduler_worktree_slots(&tasks), 2);
     }
 
@@ -2558,7 +2584,7 @@ mod tests {
 
     #[test]
     fn test_choose_empty_tasks() {
-        let result = choose_next_ready_batch(&[], 2);
+        let result = choose_next_ready_batch(&[], 2, None);
         assert!(result.is_none());
     }
 
@@ -2575,7 +2601,7 @@ mod tests {
             max_retries: None,
             preconditions: vec![],
         }];
-        let result = choose_next_ready_batch(&tasks, 2);
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_none());
     }
 
@@ -2592,7 +2618,7 @@ mod tests {
             max_retries: None,
             preconditions: vec![],
         }];
-        let result = choose_next_ready_batch(&tasks, 2);
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.selected_indices.len(), 1);
@@ -2624,7 +2650,7 @@ mod tests {
                 preconditions: vec![],
             },
         ];
-        let result = choose_next_ready_batch(&tasks, 2);
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.selected_indices.len(), 1);
@@ -2657,7 +2683,7 @@ mod tests {
                 preconditions: vec![],
             },
         ];
-        let result = choose_next_ready_batch(&tasks, 2);
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.selected_indices.len(), 1);
@@ -2665,20 +2691,18 @@ mod tests {
 
     #[test]
     fn test_choose_retry_budget_exhausted() {
-        let tasks = vec![
-            TaskItem {
-                id: "t1".into(),
-                title: "Failed".into(),
-                description: "".into(),
-                status: TaskStatus::Failed,
-                depends_on: vec![],
-                kind: Some("execution".into()),
-                contract: zn_types::TaskContract::default(),
-                max_retries: Some(0),
-                preconditions: vec![],
-            },
-        ];
-        let result = choose_next_ready_batch(&tasks, 2);
+        let tasks = vec![TaskItem {
+            id: "t1".into(),
+            title: "Failed".into(),
+            description: "".into(),
+            status: TaskStatus::Failed,
+            depends_on: vec![],
+            kind: Some("execution".into()),
+            contract: zn_types::TaskContract::default(),
+            max_retries: Some(0),
+            preconditions: vec![],
+        }];
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_none() || result.as_ref().unwrap().selected_indices.is_empty());
     }
 
@@ -2697,7 +2721,7 @@ mod tests {
                 preconditions: vec![],
             })
             .collect();
-        let result = choose_next_ready_batch(&tasks, 2);
+        let result = choose_next_ready_batch(&tasks, 2, None);
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.selected_indices.len(), 2);
@@ -2740,7 +2764,7 @@ mod tests {
                 preconditions: vec![],
             },
         ];
-        let result = choose_next_ready_batch(&tasks, 3);
+        let result = choose_next_ready_batch(&tasks, 3, None);
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.selected_indices.len(), 2);
@@ -2884,6 +2908,7 @@ mod tests {
             finish_branch_automation: None,
             execution_path: SubagentExecutionPath::Cli,
             bridge_address: None,
+            max_retries: None,
         };
         let report = ExecutionReport {
             task_id: "test-iter".into(),
@@ -2915,6 +2940,7 @@ mod tests {
             failure_classification: None,
             authorization_ticket_id: None,
             authorized_by: None,
+            governance_summary: None,
             tri_role_verdict: None,
         };
         persist_iteration_log(&tmp, "test-iter", &plan, &report).unwrap();
@@ -2934,7 +2960,7 @@ mod tests {
         fs::create_dir_all(tmp.join(".zero_nine/runtime")).unwrap();
 
         let event = SafetyEvent::default();
-        persist_safety_event(&tmp, &event);
+        let _ = persist_safety_event(&tmp, &event);
         let path = tmp.join(".zero_nine/runtime/safety_events.ndjson");
         assert!(path.exists());
         let content = fs::read_to_string(&path).unwrap();
@@ -2966,7 +2992,9 @@ mod tests {
         let _result = save_execution_envelope(&tmp, "20260101-test", "t1", &envelope).unwrap();
 
         assert!(prop_dir.join("task-t1-envelope.json").exists());
-        assert!(tmp.join(".zero_nine/runtime/current-envelope.json").exists());
+        assert!(tmp
+            .join(".zero_nine/runtime/current-envelope.json")
+            .exists());
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -3002,6 +3030,7 @@ mod tests {
             finish_branch_automation: None,
             execution_path: SubagentExecutionPath::Cli,
             bridge_address: None,
+            max_retries: None,
         };
         let report = infrastructure_failure_report(
             &task,

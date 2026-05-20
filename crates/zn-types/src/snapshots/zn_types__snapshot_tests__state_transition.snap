@@ -1,0 +1,14 @@
+---
+source: crates/zn-types/src/lib.rs
+assertion_line: 626
+expression: t
+---
+{
+  "from": "Ready",
+  "to": "RunningTask",
+  "stage_from": "ready",
+  "stage_to": "running_task",
+  "triggered_at": "[timestamp]",
+  "reason": "task_started",
+  "task_id": "task-42"
+}

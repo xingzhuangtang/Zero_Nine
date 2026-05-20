@@ -92,8 +92,7 @@ pub struct DriftCheckResult {
     pub blocking: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RemoteReadiness {
     pub git_remote_configured: bool,
     pub gh_available: bool,
@@ -146,7 +145,6 @@ impl Default for ActualProjectState {
         }
     }
 }
-
 
 impl Default for DriftPolicyDecision {
     fn default() -> Self {

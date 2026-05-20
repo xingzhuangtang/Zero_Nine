@@ -461,4 +461,10 @@ platforms: [claude-code]
         assert!(!is_valid_semver("1"));
         assert!(!is_valid_semver("invalid"));
     }
+
+    #[test]
+    fn test_render_skill_rendered() {
+        let skill = SkillFile::parse(VALID_SKILL).unwrap();
+        insta::assert_snapshot!(skill.render());
+    }
 }

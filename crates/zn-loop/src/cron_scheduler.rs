@@ -89,6 +89,7 @@ pub struct ExecutionRecord {
 
 /// Cron scheduler for Zero_Nine
 pub struct CronScheduler {
+    #[allow(dead_code)]
     project_root: PathBuf,
     state: SchedulerState,
     state_path: PathBuf,
@@ -366,7 +367,7 @@ fn parse_cron_next(cron: &str) -> Option<DateTime<Local>> {
 
     // Simple implementation - in production, use cron crate
     for _ in 0..366 * 24 * 60 {
-        next = next + chrono::Duration::minutes(1);
+        next += chrono::Duration::minutes(1);
         if cron_matches(cron, next) {
             return Some(next);
         }
@@ -381,10 +382,10 @@ fn cron_matches(cron: &str, time: DateTime<Local>) -> bool {
         return false;
     }
 
-    let minute = time.minute() as u32;
-    let hour = time.hour() as u32;
-    let day = time.day() as u32;
-    let month = time.month() as u32;
+    let minute = time.minute();
+    let hour = time.hour();
+    let day = time.day();
+    let month = time.month();
     let weekday = time.weekday().num_days_from_sunday();
 
     matches_field(parts[0], minute, 0, 59)
@@ -401,9 +402,9 @@ fn matches_field(field: &str, value: u32, _min: u32, _max: u32) -> bool {
     }
 
     // Handle */N (every N)
-    if field.starts_with("*/") {
-        if let Ok(step) = field[2..].parse::<u32>() {
-            return step > 0 && value % step == 0;
+    if let Some(after_prefix) = field.strip_prefix("*/") {
+        if let Ok(step) = after_prefix.parse::<u32>() {
+            return step > 0 && value.is_multiple_of(step);
         }
     }
 

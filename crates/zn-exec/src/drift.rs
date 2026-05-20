@@ -334,7 +334,7 @@ pub fn check_state_machine_consistency(
 ///
 /// Returns a list of actions that can clean up the workspace state.
 pub fn generate_compensation_actions(
-    project_root: &Path,
+    _project_root: &Path,
     diffs: &[StateDiff],
 ) -> Vec<CompensationAction> {
     let mut actions = Vec::new();
@@ -499,7 +499,11 @@ mod tests {
         let result = check_drift(&desired, &actual);
         assert!(!result.report.diffs.is_empty());
         // Missing files are reported as "file:<name>"
-        assert!(result.report.diffs.iter().any(|d| d.field == "file:README.md"));
+        assert!(result
+            .report
+            .diffs
+            .iter()
+            .any(|d| d.field == "file:README.md"));
     }
 
     #[test]
@@ -528,7 +532,11 @@ mod tests {
         let result = check_drift(&desired, &actual);
         assert!(!result.report.diffs.is_empty());
         // Missing toolchains are reported as "toolchain:<name>"
-        assert!(result.report.diffs.iter().any(|d| d.field == "toolchain:rustc"));
+        assert!(result
+            .report
+            .diffs
+            .iter()
+            .any(|d| d.field == "toolchain:rustc"));
     }
 
     #[test]
@@ -545,10 +553,9 @@ mod tests {
         }];
         let actions = generate_compensation_actions(&tmp, &diffs);
         assert!(!actions.is_empty());
-        assert!(actions.iter().any(|a| matches!(
-            a.action_type,
-            CompensationType::ResetWorkspace
-        )));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a.action_type, CompensationType::ResetWorkspace)));
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -566,10 +573,9 @@ mod tests {
         }];
         let actions = generate_compensation_actions(&tmp, &diffs);
         assert!(!actions.is_empty());
-        assert!(actions.iter().any(|a| matches!(
-            a.action_type,
-            CompensationType::DeleteBranch
-        )));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a.action_type, CompensationType::DeleteBranch)));
         assert_eq!(actions[0].target, "old-feature");
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -588,10 +594,9 @@ mod tests {
         }];
         let actions = generate_compensation_actions(&tmp, &diffs);
         assert!(!actions.is_empty());
-        assert!(actions.iter().any(|a| matches!(
-            a.action_type,
-            CompensationType::DeleteWorktree
-        )));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a.action_type, CompensationType::DeleteWorktree)));
         let _ = fs::remove_dir_all(&tmp);
     }
 

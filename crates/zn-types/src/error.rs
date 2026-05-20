@@ -5,6 +5,7 @@
 //! bare `anyhow::anyhow!("...")` strings for errors that cross API boundaries
 //! or need to be matched programmatically.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // ==================== Orchestration Errors ====================
@@ -34,9 +35,7 @@ pub enum ProposalError {
     #[error("no proposal found")]
     NotFound,
 
-    #[error(
-        "cannot execute proposal {proposal_id}: brainstorm session {session_id} is not Ready"
-    )]
+    #[error("cannot execute proposal {proposal_id}: brainstorm session {session_id} is not Ready")]
     BrainstormNotReady {
         proposal_id: String,
         session_id: String,
@@ -118,6 +117,99 @@ pub enum MemoryToolError {
     RemoveTargetNotFound { target: String },
 }
 
+// ==================== Governance Errors ====================
+
+/// Errors that occur during governance policy enforcement, audit, and compliance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GovernanceError {
+    ActionBlocked {
+        action: String,
+        reason: String,
+    },
+    AuthorizationDenied {
+        user: String,
+        action: String,
+    },
+    TokenBudgetExceeded {
+        used: u64,
+        max: u64,
+    },
+    ApprovalRequired {
+        action: String,
+        approver: String,
+    },
+    RateLimitExceeded {
+        action: String,
+        limit: u32,
+        window_secs: u64,
+    },
+    AuditIntegrityViolation {
+        entry: String,
+    },
+    ComplianceCheckFailed {
+        check: String,
+        detail: String,
+    },
+    InvalidRole {
+        role: String,
+    },
+    TicketExpired {
+        ticket_id: String,
+    },
+}
+
+impl std::fmt::Display for GovernanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ActionBlocked { action, reason } => {
+                write!(f, "Action '{}' blocked: {}", action, reason)
+            }
+            Self::AuthorizationDenied { user, action } => {
+                write!(
+                    f,
+                    "Authorization denied for user '{}' on action '{}'",
+                    user, action
+                )
+            }
+            Self::TokenBudgetExceeded { used, max } => {
+                write!(f, "Token budget exceeded: used {} of max {}", used, max)
+            }
+            Self::ApprovalRequired { action, approver } => {
+                write!(
+                    f,
+                    "Approval required for action '{}' by '{}'",
+                    action, approver
+                )
+            }
+            Self::RateLimitExceeded {
+                action,
+                limit,
+                window_secs,
+            } => {
+                write!(
+                    f,
+                    "Rate limit exceeded for '{}': {} per {}s",
+                    action, limit, window_secs
+                )
+            }
+            Self::AuditIntegrityViolation { entry } => {
+                write!(f, "Audit integrity violation on entry '{}'", entry)
+            }
+            Self::ComplianceCheckFailed { check, detail } => {
+                write!(f, "Compliance check '{}' failed: {}", check, detail)
+            }
+            Self::InvalidRole { role } => {
+                write!(f, "Invalid governance role: '{}'", role)
+            }
+            Self::TicketExpired { ticket_id } => {
+                write!(f, "Approval ticket '{}' expired", ticket_id)
+            }
+        }
+    }
+}
+
+impl std::error::Error for GovernanceError {}
+
 // ==================== Top-level ZnError ====================
 
 /// The top-level error type for Zero_Nine operations.
@@ -140,6 +232,9 @@ pub enum ZnError {
 
     #[error(transparent)]
     MemoryTool(#[from] MemoryToolError),
+
+    #[error("governance error: {0}")]
+    Governance(#[from] GovernanceError),
 
     /// Catch-all for I/O and other infrastructure errors.
     #[error("I/O error: {0}")]

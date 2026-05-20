@@ -1,0 +1,18 @@
+---
+source: crates/zn-exec/src/governance.rs
+assertion_line: 2067
+expression: "entries[0]"
+---
+{
+  "id": "[uuid]",
+  "timestamp": "[timestamp]",
+  "action": "WriteFile",
+  "risk_level": "Low",
+  "decision": "Allow",
+  "user_id": null,
+  "agent_id": null,
+  "task_id": "task-1",
+  "details": "Write to config.txt",
+  "entry_hash": "[hash]",
+  "prev_hash": "[hash]"
+}

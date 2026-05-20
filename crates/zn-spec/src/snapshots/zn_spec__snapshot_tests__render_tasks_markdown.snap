@@ -1,0 +1,11 @@
+---
+source: crates/zn-spec/src/lib.rs
+assertion_line: 2325
+expression: render_tasks_markdown(&tasks)
+---
+# Tasks
+
+| ID | Title | Status | Depends On |
+| --- | --- | --- | --- |
+| 1 | Setup project | Pending | - |
+| 2 | Write tests | Completed | 1 |

@@ -229,7 +229,7 @@ impl SkillRegistry {
         let mut total_versions = 0;
         let mut active_count = 0;
 
-        for (_name, records) in &self.data.versions {
+        for records in self.data.versions.values() {
             total_skills += 1;
             total_versions += records.len();
             if records.iter().any(|r| r.active) {
@@ -281,8 +281,15 @@ mod tests {
     use super::*;
     use std::env::temp_dir;
 
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn temp_registry() -> PathBuf {
-        temp_dir().join(format!("skill_registry_{}.json", std::process::id()))
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp_dir().join(format!("skill_registry_test_{n}.json"));
+        let _ = fs::remove_file(&path);
+        path
     }
 
     #[test]
@@ -459,6 +466,39 @@ mod tests {
         assert_eq!(summary.total_skills, 2);
         assert_eq!(summary.total_versions, 3);
         assert_eq!(summary.active_count, 2);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_registry_summary_snapshot() {
+        let path = temp_dir().join("skill_registry_snap.json");
+        let _ = fs::remove_file(&path);
+        let mut registry = SkillRegistry::new(path.clone()).unwrap();
+
+        let v1 = SkillVersion {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
+        registry
+            .register_version("test-skill-a", v1, "hash-a", 0.95, "/path/a")
+            .unwrap();
+
+        let v2 = SkillVersion {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
+        registry
+            .register_version("test-skill-b", v2, "hash-b", 0.80, "/path/b")
+            .unwrap();
+
+        let summary = registry.summary();
+        insta::assert_json_snapshot!(summary, {
+            ".skills.*.updated_at" => "[timestamp]",
+            ".skills.*.created_at" => "[timestamp]",
+        });
 
         let _ = fs::remove_file(&path);
     }

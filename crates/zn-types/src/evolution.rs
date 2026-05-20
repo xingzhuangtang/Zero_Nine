@@ -362,14 +362,12 @@ impl Default for SkillBundle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillLibrary {
     pub bundles: Vec<SkillBundle>,
     #[serde(default)]
     pub active_bundle_ids: Vec<String>,
 }
-
 
 // ==================== Multi-Agent Orchestration ====================
 
@@ -384,9 +382,7 @@ pub enum AgentRole {
     Coordinator,
 }
 
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MultiAgentOrchestration {
     pub proposal_id: String,
     pub dispatches: Vec<SubagentDispatch>,
@@ -395,4 +391,3 @@ pub struct MultiAgentOrchestration {
     #[serde(default)]
     pub conflict_resolutions: Vec<String>,
 }
-

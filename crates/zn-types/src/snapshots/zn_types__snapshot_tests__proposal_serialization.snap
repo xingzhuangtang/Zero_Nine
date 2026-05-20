@@ -1,0 +1,35 @@
+---
+source: crates/zn-types/src/lib.rs
+assertion_line: 662
+expression: proposal
+---
+{
+  "schema_version": "zero_nine.stage1.v1",
+  "id": "20260101-proposal-001",
+  "title": "Add user authentication",
+  "goal": "Implement OAuth2 login flow",
+  "status": "ready",
+  "created_at": "[timestamp]",
+  "updated_at": "[timestamp]",
+  "design_summary": null,
+  "source_brainstorm_session_id": null,
+  "source_issue_number": null,
+  "source_repo": null,
+  "source_type": null,
+  "problem_statement": "Users need secure login",
+  "scope_in": [
+    "Login page"
+  ],
+  "scope_out": [
+    "SSO"
+  ],
+  "constraints": [],
+  "acceptance_criteria": [],
+  "risks": [],
+  "dependencies": [],
+  "non_goals": [
+    "SSO"
+  ],
+  "execution_strategy": null,
+  "tasks": []
+}

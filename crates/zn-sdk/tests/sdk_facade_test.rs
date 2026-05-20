@@ -4,7 +4,7 @@
 use chrono::Utc;
 use std::fs;
 use tempfile::TempDir;
-use zn_sdk::{from_project, NoopInput, ZeroNine};
+use zn_sdk::{from_project, ZeroNine};
 use zn_types::{BrainstormSession, BrainstormVerdict, HostKind};
 
 fn sdk(dir: &TempDir, host: HostKind) -> ZeroNine {

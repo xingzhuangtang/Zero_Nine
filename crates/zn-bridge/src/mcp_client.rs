@@ -107,11 +107,12 @@ impl McpClient {
             return Ok(());
         }
 
-        let content = std::fs::read_to_string(&self.config_path)
-            .with_context(|| format!("Failed to read MCP config: {}", self.config_path.display()))?;
+        let content = std::fs::read_to_string(&self.config_path).with_context(|| {
+            format!("Failed to read MCP config: {}", self.config_path.display())
+        })?;
 
-        let config: McpConfig = serde_yaml::from_str(&content)
-            .with_context(|| "Failed to parse MCP config YAML")?;
+        let config: McpConfig =
+            serde_yaml::from_str(&content).with_context(|| "Failed to parse MCP config YAML")?;
 
         for (name, server_config) in config.mcp_servers {
             // Register tools for this server
@@ -239,29 +240,19 @@ impl McpClient {
 
     /// Get tools by server
     pub fn get_tools_by_server(&self, server: &str) -> Vec<&McpTool> {
-        self.tools
-            .values()
-            .filter(|t| t.server == server)
-            .collect()
+        self.tools.values().filter(|t| t.server == server).collect()
     }
 
     /// Call a tool on an MCP server
-    pub async fn call_tool(
-        &self,
-        server: &str,
-        tool: &str,
-        args: Value,
-    ) -> Result<McpToolResult> {
+    pub async fn call_tool(&self, server: &str, tool: &str, args: Value) -> Result<McpToolResult> {
         let result = match server {
             "github" => self.call_github_tool(tool, args).await,
             "linear" => self.call_linear_tool(tool, args).await,
             "filesystem" => self.call_filesystem_tool(tool, args).await,
-            _ => {
-                Ok(Value::String(format!(
-                    "Tool {} called on server {} with args: {:?}",
-                    tool, server, args
-                )))
-            }
+            _ => Ok(Value::String(format!(
+                "Tool {} called on server {} with args: {:?}",
+                tool, server, args
+            ))),
         };
 
         match result {
@@ -294,18 +285,13 @@ impl McpClient {
                     title, body
                 )))
             }
-            "list_issues" => {
-                Ok(Value::Array(vec![
-                    Value::String("Issue 1: Example bug".to_string()),
-                    Value::String("Issue 2: Feature request".to_string()),
-                ]))
-            }
+            "list_issues" => Ok(Value::Array(vec![
+                Value::String("Issue 1: Example bug".to_string()),
+                Value::String("Issue 2: Feature request".to_string()),
+            ])),
             "create_pull_request" => {
                 let title = args["title"].as_str().unwrap_or("Untitled");
-                Ok(Value::String(format!(
-                    "Would create PR: '{}'",
-                    title
-                )))
+                Ok(Value::String(format!("Would create PR: '{}'", title)))
             }
             _ => Err(anyhow::anyhow!("Unknown GitHub tool: {}", tool)),
         }
@@ -322,12 +308,10 @@ impl McpClient {
                     title
                 )))
             }
-            "list_issues" => {
-                Ok(Value::Array(vec![
-                    Value::String("LIN-1: Example task".to_string()),
-                    Value::String("LIN-2: Bug fix".to_string()),
-                ]))
-            }
+            "list_issues" => Ok(Value::Array(vec![
+                Value::String("LIN-1: Example task".to_string()),
+                Value::String("LIN-2: Bug fix".to_string()),
+            ])),
             _ => Err(anyhow::anyhow!("Unknown Linear tool: {}", tool)),
         }
     }
@@ -337,16 +321,20 @@ impl McpClient {
         // 安全修复：验证文件系统操作在项目根目录内
         match tool {
             "read_file" => {
-                let path = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+                let path = args["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
                 let resolved_path = PathBuf::from(path);
 
                 // 如果配置了项目根目录，验证路径
                 if let Some(project_root) = &self.project_root {
-                    let canonicalized = resolved_path.canonicalize()
+                    let canonicalized = resolved_path
+                        .canonicalize()
                         .with_context(|| format!("Failed to resolve path: {}", path))?;
 
-                    let canonicalized_root = project_root.canonicalize()
-                        .with_context(|| format!("Failed to resolve project root: {}", project_root.display()))?;
+                    let canonicalized_root = project_root.canonicalize().with_context(|| {
+                        format!("Failed to resolve project root: {}", project_root.display())
+                    })?;
 
                     if !canonicalized.starts_with(&canonicalized_root) {
                         return Err(anyhow::anyhow!(
@@ -362,8 +350,12 @@ impl McpClient {
                 Ok(Value::String(content))
             }
             "write_file" => {
-                let path = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
-                let content = args["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content argument"))?;
+                let path = args["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+                let content = args["content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing content argument"))?;
                 let resolved_path = PathBuf::from(path);
 
                 // 如果配置了项目根目录，验证路径
@@ -373,7 +365,9 @@ impl McpClient {
                         let canonicalized_parent = parent.canonicalize().ok();
                         let canonicalized_root = project_root.canonicalize().ok();
 
-                        if let (Some(real_parent), Some(real_root)) = (canonicalized_parent, canonicalized_root) {
+                        if let (Some(real_parent), Some(real_root)) =
+                            (canonicalized_parent, canonicalized_root)
+                        {
                             if !real_parent.starts_with(&real_root) {
                                 return Err(anyhow::anyhow!(
                                     "Path '{}' is outside project root '{}'. Access denied.",
@@ -390,16 +384,20 @@ impl McpClient {
                 Ok(Value::Bool(true))
             }
             "list_dir" => {
-                let path = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
+                let path = args["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path argument"))?;
                 let resolved_path = PathBuf::from(path);
 
                 // 如果配置了项目根目录，验证路径
                 if let Some(project_root) = &self.project_root {
-                    let canonicalized = resolved_path.canonicalize()
+                    let canonicalized = resolved_path
+                        .canonicalize()
                         .with_context(|| format!("Failed to resolve path: {}", path))?;
 
-                    let canonicalized_root = project_root.canonicalize()
-                        .with_context(|| format!("Failed to resolve project root: {}", project_root.display()))?;
+                    let canonicalized_root = project_root.canonicalize().with_context(|| {
+                        format!("Failed to resolve project root: {}", project_root.display())
+                    })?;
 
                     if !canonicalized.starts_with(&canonicalized_root) {
                         return Err(anyhow::anyhow!(
@@ -414,7 +412,9 @@ impl McpClient {
                     .filter_map(|e| e.ok())
                     .filter_map(|e| e.file_name().into_string().ok())
                     .collect();
-                Ok(Value::Array(entries.into_iter().map(Value::String).collect()))
+                Ok(Value::Array(
+                    entries.into_iter().map(Value::String).collect(),
+                ))
             }
             _ => Err(anyhow::anyhow!("Unknown filesystem tool: {}", tool)),
         }
@@ -457,7 +457,10 @@ pub fn create_default_mcp_config(project_root: &Path) -> McpConfig {
         McpServerConfig {
             name: "GitHub".to_string(),
             command: "npx".to_string(),
-            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
             env: HashMap::new(), // GITHUB_TOKEN should be added by user
             tools_include: vec![
                 "create_issue".to_string(),
@@ -474,12 +477,12 @@ pub fn create_default_mcp_config(project_root: &Path) -> McpConfig {
         McpServerConfig {
             name: "Linear".to_string(),
             command: "npx".to_string(),
-            args: vec!["-y".to_string(), "@modelcontextprotocol/server-linear".to_string()],
-            env: HashMap::new(), // User should add LINEAR_API_KEY environment variable
-            tools_include: vec![
-                "create_issue".to_string(),
-                "list_issues".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-linear".to_string(),
             ],
+            env: HashMap::new(), // User should add LINEAR_API_KEY environment variable
+            tools_include: vec!["create_issue".to_string(), "list_issues".to_string()],
             tools_exclude: vec![],
         },
     );
@@ -516,8 +519,8 @@ pub fn save_mcp_config(config: &McpConfig, path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let content = serde_yaml::to_string(config)
-        .with_context(|| "Failed to serialize MCP config to YAML")?;
+    let content =
+        serde_yaml::to_string(config).with_context(|| "Failed to serialize MCP config to YAML")?;
 
     std::fs::write(path, content)?;
     Ok(())
@@ -525,9 +528,7 @@ pub fn save_mcp_config(config: &McpConfig, path: &Path) -> Result<()> {
 
 /// Load or create default MCP config
 pub fn load_or_create_mcp_config(project_root: &Path) -> Result<McpClient> {
-    let config_path = project_root
-        .join(".zero_nine")
-        .join("mcp_config.yaml");
+    let config_path = project_root.join(".zero_nine").join("mcp_config.yaml");
 
     if !config_path.exists() {
         let config = create_default_mcp_config(project_root);
@@ -580,22 +581,31 @@ mod tests {
             "path": tmp_dir.join("test.txt").to_str().unwrap(),
             "content": "Hello, World!"
         });
-        let result = client.call_filesystem_tool("write_file", write_args).await.unwrap();
+        let result = client
+            .call_filesystem_tool("write_file", write_args)
+            .await
+            .unwrap();
         assert_eq!(result, Value::Bool(true));
 
         // Test read
         let read_args = serde_json::json!({
             "path": tmp_dir.join("test.txt").to_str().unwrap()
         });
-        let result = client.call_filesystem_tool("read_file", read_args).await.unwrap();
+        let result = client
+            .call_filesystem_tool("read_file", read_args)
+            .await
+            .unwrap();
         assert_eq!(result.as_str().unwrap(), "Hello, World!");
 
         // Test list
         let list_args = serde_json::json!({
             "path": tmp_dir.to_str().unwrap()
         });
-        let result = client.call_filesystem_tool("list_dir", list_args).await.unwrap();
-        assert!(result.as_array().unwrap().len() > 0);
+        let result = client
+            .call_filesystem_tool("list_dir", list_args)
+            .await
+            .unwrap();
+        assert!(!result.as_array().unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
