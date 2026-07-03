@@ -17,3 +17,6 @@ zn-exec = { path = "../zn-exec" }
 zn-host = { path = "../zn-host" }
 zn-spec = { path = "../zn-spec" }
 zn-types = { path = "../zn-types" }
+
+[dev-dependencies]
+uuid.workspace = true

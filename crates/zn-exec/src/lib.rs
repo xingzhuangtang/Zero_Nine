@@ -79,6 +79,22 @@ pub use token_counter::{OutputOptimizer, TokenBudget, TokenCounter};
 pub mod workspace_prep;
 pub use workspace_prep::{prepare_container_sandbox, prepare_workspace};
 
+// A2A Bus — in-memory agent-to-agent message bus
+pub mod a2a_bus;
+pub use a2a_bus::{A2ABus, A2ABusBuilder};
+
+// Team Coordinator — multi-agent team orchestration
+pub mod team_coordinator;
+pub use team_coordinator::TeamCoordinator;
+
+// Memory A2A Handler — bridges A2A bus queries to MemoryStore
+pub mod memory_handler;
+pub use memory_handler::MemoryA2AHandler;
+
+// Safe Command Executor — validates commands against permission matrices
+pub mod safe_command;
+pub use safe_command::SafeCommandExecutor;
+
 // Re-export proto types for convenience
 pub use governance::{
     render_approval_ticket, run_gates, ActionType, ApprovalStatus, ApprovalTicket,

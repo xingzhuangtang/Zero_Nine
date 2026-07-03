@@ -191,8 +191,8 @@ impl AgentMetricsStore {
             entry.successful_tasks += 1;
         }
         entry.avg_quality = (entry.avg_quality * n + quality) / (n + 1.0);
-        let new_avg_latency = (entry.avg_latency_ms as f64 * n as f64 + latency_ms as f64)
-            / (n as f64 + 1.0);
+        let new_avg_latency =
+            (entry.avg_latency_ms as f64 * n as f64 + latency_ms as f64) / (n as f64 + 1.0);
         entry.avg_latency_ms = new_avg_latency as u64;
         let new_avg_token =
             (entry.avg_token_usage as f64 * n as f64 + token_usage as f64) / (n as f64 + 1.0);
@@ -236,11 +236,7 @@ impl AgentMetricsStore {
                     },
                     total_collaborations: total,
                     applicable_task_types: vec!["general".to_string()],
-                    avg_latency_ms: if total > 0 {
-                        total_latency / total
-                    } else {
-                        0
-                    },
+                    avg_latency_ms: if total > 0 { total_latency / total } else { 0 },
                 }
             })
             .collect()
@@ -325,6 +321,43 @@ impl IntegrationEngine {
         self.belief_tracker.save()?;
 
         Ok(())
+    }
+
+    /// Record an external event and produce evolution signals.
+    ///
+    /// This extends the integration engine to accept signals from sources
+    /// beyond the execution loop: CI failures, runtime crashes, user reports.
+    pub fn record_external_event(
+        &mut self,
+        event: &zn_types::ExternalEvent,
+    ) -> Result<Vec<zn_types::EvolutionSignal>> {
+        use crate::signal_detector::SignalDetector;
+
+        let detector = SignalDetector::default();
+        let signals = detector.detect_from_external(event);
+
+        if !signals.is_empty() {
+            // Update belief tracker with external evidence
+            let is_negative = signals
+                .iter()
+                .any(|s| matches!(s.proposed_action, zn_types::EvolutionAction::AutoFix));
+            self.belief_tracker.update_belief(
+                !is_negative,
+                &format!("External event: {} — {}", event.event_type, event.title),
+                None,
+            );
+            self.belief_tracker.save()?;
+
+            // Record in reward model for tracking
+            self.reward_model.record_external(
+                &signals[0].task_id,
+                signals[0].confidence,
+                &event.title,
+            );
+            self.reward_model.save()?;
+        }
+
+        Ok(signals)
     }
 
     /// 获取集成决策
@@ -554,12 +587,7 @@ impl IntegrationEngine {
     }
 
     /// Record a collaboration event between multiple agents.
-    pub fn record_collaboration(
-        &mut self,
-        agent_ids: Vec<String>,
-        success: bool,
-        latency_ms: u64,
-    ) {
+    pub fn record_collaboration(&mut self, agent_ids: Vec<String>, success: bool, latency_ms: u64) {
         self.agent_metrics
             .record_collaboration(agent_ids, success, latency_ms);
     }

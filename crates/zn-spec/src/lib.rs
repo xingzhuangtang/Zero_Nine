@@ -1,7 +1,11 @@
+pub mod learning_memory;
+pub mod memory_store;
 pub mod memory_tool;
 pub mod session_search;
 pub mod skill_format;
 pub mod skill_manager;
+
+pub use memory_store::{MemoryStore, SqliteMemoryStore};
 
 use anyhow::{Context, Result};
 use chrono::Utc;

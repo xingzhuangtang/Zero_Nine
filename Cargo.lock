@@ -3276,6 +3276,7 @@ dependencies = [
  "uuid",
  "zn-bridge",
  "zn-evolve",
+ "zn-spec",
  "zn-types",
 ]
 
@@ -3284,10 +3285,12 @@ name = "zn-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
  "uuid",
+ "zn-exec",
  "zn-spec",
  "zn-types",
 ]
@@ -3301,6 +3304,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "uuid",
  "zn-evolve",
  "zn-exec",
  "zn-host",
@@ -3336,6 +3340,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "uuid",
  "zn-types",
 ]
 

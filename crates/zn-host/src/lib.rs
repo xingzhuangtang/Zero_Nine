@@ -8,6 +8,14 @@ pub use github::{
     create_pull_request, read_github_issues, write_execution_summary, write_issue_comment,
 };
 
+// Channel abstraction
+pub mod channel;
+pub use channel::{Channel, ChannelConfig, ChannelRegistry};
+
+// Concrete channel implementations
+pub mod channels;
+pub use channels::{ClaudeCodeChannel, OpenCodeChannel, TerminalChannel};
+
 pub fn detect_host(explicit: Option<&str>) -> HostKind {
     match explicit.unwrap_or_default().to_lowercase().as_str() {
         "claude" | "claude-code" => HostKind::ClaudeCode,

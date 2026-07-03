@@ -840,7 +840,7 @@ pub struct SkillEvaluation {
     pub notes: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvolutionKind {
     AutoFix,
@@ -848,12 +848,71 @@ pub enum EvolutionKind {
     AutoLearn,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionSignalSource {
+    #[default]
+    ExecutionReport,
+    RewardModel,
+    BeliefTracker,
+    CurriculumManager,
+    ExternalAgent,
+    ExternalEvent,
+}
+
+impl EvolutionSignalSource {
+    /// Return a human-readable name for the signal source.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::ExecutionReport => "execution_report",
+            Self::RewardModel => "reward_model",
+            Self::BeliefTracker => "belief_tracker",
+            Self::CurriculumManager => "curriculum_manager",
+            Self::ExternalAgent => "external_agent",
+            Self::ExternalEvent => "external_event",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionAction {
+    #[default]
+    AutoFix,
+    AutoImprove,
+    AutoLearn,
+    PromoteSkill,
+    DeprecateSkill,
+    NoAction,
+}
+
+/// Enhanced evolution signal with source tracking and proposed actions.
+/// New fields have #[serde(default)] for backward compatibility with existing signals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolutionSignal {
+    /// Unique signal ID (UUID).
+    #[serde(default = "default_uuid")]
+    pub id: String,
     pub task_id: String,
     pub score: f32,
     pub decision: String,
     pub notes: Vec<String>,
+    /// Where this signal originated from.
+    #[serde(default)]
+    pub source: EvolutionSignalSource,
+    /// When the signal was detected.
+    #[serde(default = "chrono::Utc::now")]
+    pub detected_at: chrono::DateTime<chrono::Utc>,
+    /// Confidence in the signal (0.0-1.0).
+    #[serde(default)]
+    pub confidence: f32,
+    /// Recommended evolution action based on this signal.
+    #[serde(default)]
+    pub proposed_action: EvolutionAction,
+}
+
+fn default_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -864,6 +923,28 @@ pub struct EvolutionCandidate {
     pub patch: String,
     pub confidence: f32,
     pub created_at: DateTime<Utc>,
+}
+
+/// External event that can trigger evolution signals.
+///
+/// Sources include CI failures, runtime crashes, user-reported issues,
+/// and any other non-execution-report events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalEvent {
+    pub id: String,
+    /// Event source: "ci_failure", "github_issue", "runtime_crash", "user_report"
+    pub source: String,
+    /// Event type: "compilation_error", "test_failure", "panic", "timeout"
+    pub event_type: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default = "chrono::Utc::now")]
+    pub detected_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ==================== Task Complexity Intelligence ====================

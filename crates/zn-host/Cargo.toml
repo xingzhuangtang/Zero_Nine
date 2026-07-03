@@ -8,9 +8,11 @@ description = "Host adapters for Claude Code and OpenCode"
 
 [dependencies]
 anyhow.workspace = true
+async-trait = "0.1"
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 zn-types = { path = "../zn-types" }
 zn-spec = { path = "../zn-spec" }
+zn-exec = { path = "../zn-exec" }

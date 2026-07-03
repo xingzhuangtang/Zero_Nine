@@ -146,6 +146,13 @@ impl RewardModel {
         );
     }
 
+    /// Record an external event signal (CI failure, crash, etc.) in the reward model.
+    pub fn record_external(&mut self, task_id: &str, confidence: f32, _title: &str) {
+        // External events are recorded as low-confidence observations
+        let quality = 1.0 - confidence; // Invert: higher confidence failure = lower quality
+        self.record_execution(task_id, quality, 0.0, 0, 0, Some(quality));
+    }
+
     /// Get the weighted reward score
     pub fn get_weighted_reward(&self) -> f32 {
         self.reward.weighted_reward()

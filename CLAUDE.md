@@ -5,26 +5,6 @@
 **Zero_Nine is built on Harness Engineering and Environment Engineering principles.**
 **Zero_Nine 基于 Harness Engineering（驾驭工程）和 Environment Engineering（环境工程）原则构建。**
 
-### The Future of AI Agents: Environment as the Foundation
-### 未来智能体：环境为本
-
-**Zero_Nine's Vision for Agent Development / Zero_Nine 的智能体发展愿景**
-
-我们认为未来的智能体需要某种意义的东西来托举 —— 那是**环境工程**：
-
-> 它不仅是技术组件，更是行为塑造的媒介
-> 它不仅是隔离运行，更是演化学习的土壤
-> 它不仅是工程实现，更是智能可靠性的根本保障
-
-这是一种**"生态思维"** —— 好的园丁不直接塑造每一片叶子，而是调配好土壤、光照、水分，让植物自然生长。
-
-**Zero_Nine is that environment / Zero_Nine 就是这样的环境：**
-- **土壤 (Soil)**: 结构化上下文、规范工件、技能库
-- **光照 (Light)**: 奖励信号、反馈回路、置信度追踪
-- **水分 (Water)**: 课程学习、信念更新、演化候选
-
----
-
 ### Harness Engineering / 驾驭工程
 
 Zero_Nine treats AI agents as the "model" — the intelligence that generates code. The project's purpose is to build the **harness** around that model:
@@ -93,6 +73,8 @@ zero-nine run --project . --host claude-code --goal "your goal"
 | Host / 宿主 | `zn-host` | Claude/OpenCode adapters / 适配器 |
 | CLI / 命令行 | `zn-cli` | `zero-nine` binary / 二进制入口 |
 | Bridge / 桥接 | `zn-bridge` | gRPC + proto + type conversion / 类型转换层 |
+| SDK / 工具包 | `zn-sdk` | Unified facade / 统一门面 |
+| Agent SDK | `zn-agent-sdk` | External agent SDK / 外部代理 SDK |
 
 ## Claude Code Integration / Claude Code 集成
 
@@ -162,15 +144,8 @@ adapters/claude-code/.claude/skills/zero-nine-orchestrator/SKILL.md
 # Run all tests / 运行所有测试
 cargo test --all-targets
 
-# Test counts / 测试数量 (107 total)
-# - zn-types: 16 tests
-# - zn-exec: 31 tests
-# - zn-evolve: 21 tests
-# - zn-spec: 3 tests
-# - zn-host: 10 tests
-# - zn-cli: 2 tests
-# - zn-bridge: 5 tests
-# - zn-loop: 22 tests (incl. integration)
+# Test counts / 测试数量 (~289 total, v3.0.0)
+# zn-loop includes integration tests (state transitions, NDJSON persistence, failure handling)
 ```
 
 ## Code Quality / 代码质量
@@ -180,77 +155,14 @@ cargo test --all-targets
 
 ## Behavioral Guidelines / 行为准则
 
-> Inspired by [andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)
-
-Behavioral guidelines to reduce common LLM coding mistakes.
-
-**Tradeoff**: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if**: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+Follow the `superpowers` skills loaded in this session (systematic-debugging, tdd, code-review, verification-before-completion, etc.) — they encode the same principles with executable workflows.
 
 ## Files to Read First / 优先阅读
 
 1. `README.md` — Overview / 概述
-2. `docs/architecture.md` — Architecture / 架构
-3. `crates/zn-types/src/lib.rs` — Data models / 数据模型
-4. `crates/zn-loop/src/lib.rs` — Scheduler / 调度器
-5. `crates/zn-exec/src/lib.rs` — Execution / 执行
-6. `crates/zn-bridge/src/types.rs` — gRPC type conversion / 类型转换
-7. `AGENTS.md` — Detailed project guide / 详细项目指南
+2. `crates/zn-types/src/lib.rs` — Data models / 数据模型
+3. `crates/zn-loop/src/lib.rs` — Scheduler / 调度器
+4. `crates/zn-exec/src/lib.rs` — Execution / 执行
+5. `crates/zn-exec/src/subagent_dispatcher.rs` — Subagent dispatch (Cli/Bridge/Hybrid) / 子代理调度
+6. `crates/zn-evolve/src/lib.rs` — IntegrationEngine + skill evolution / 集成引擎 + 技能进化
+7. `crates/zn-types/src/state_machine.rs` — LoopStage state machine / 循环状态机
