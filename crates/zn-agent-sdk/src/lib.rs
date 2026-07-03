@@ -77,7 +77,11 @@ impl AgentBuilder {
     /// Build and connect the agent with the given task handler.
     pub async fn connect(self, handler: Box<dyn TaskHandler>) -> Result<RegisteredAgent> {
         let descriptor = AgentDescriptor {
-            agent_id: format!("{}-{}", self.name.to_lowercase().replace(' ', "-"), uuid::Uuid::new_v4()),
+            agent_id: format!(
+                "{}-{}",
+                self.name.to_lowercase().replace(' ', "-"),
+                uuid::Uuid::new_v4()
+            ),
             name: self.name,
             agent_type: self.agent_type,
             capabilities: self.capabilities,
