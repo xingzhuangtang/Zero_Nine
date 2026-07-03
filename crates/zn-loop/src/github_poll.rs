@@ -33,7 +33,11 @@ struct CIBuildRun {
 /// Poll GitHub for open issues and register them as cron jobs.
 ///
 /// Returns the number of new issues discovered.
-pub fn poll_github_issues(project_root: &Path, repo: Option<&str>) -> Result<usize> {
+pub fn poll_github_issues(
+    project_root: &Path,
+    repo: Option<&str>,
+    proposal: Option<&zn_types::Proposal>,
+) -> Result<usize> {
     let manifest = zn_spec::load_manifest(project_root)?.unwrap_or_default();
     let effective_repo = repo.or(manifest.github_repo.as_deref());
 
@@ -54,13 +58,18 @@ pub fn poll_github_issues(project_root: &Path, repo: Option<&str>) -> Result<usi
     for issue in &issues {
         let job_id = format!("gh-issue-{}", issue.number);
 
-        // Skip if already registered
+        // Skip if already registered as a cron job
         if scheduler.get_job(&job_id).is_some() {
             continue;
         }
 
         // Skip if already has a proposal for this issue
         if has_proposal_for_issue(project_root, issue.number) {
+            continue;
+        }
+
+        // Skip if already discovered as a cron-discovered task in the proposal
+        if proposal.is_some_and(|p| has_cron_task_for_issue(p, issue.number)) {
             continue;
         }
 
@@ -258,6 +267,15 @@ fn has_proposal_for_issue(project_root: &Path, issue_number: u64) -> bool {
     false
 }
 
+/// Check if the proposal already has a cron-discovered task for this issue.
+fn has_cron_task_for_issue(proposal: &zn_types::Proposal, issue_number: u64) -> bool {
+    proposal.tasks.iter().any(|t| {
+        t.kind.as_deref() == Some("cron-discovered")
+            && (t.title.contains(&format!("#{}", issue_number))
+                || t.description.contains(&format!("#{}", issue_number)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,7 +287,7 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // No manifest, so no repo configured
-        let result = poll_github_issues(&tmp_dir, None).unwrap();
+        let result = poll_github_issues(&tmp_dir, None, None).unwrap();
         assert_eq!(result, 0);
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

@@ -845,6 +845,13 @@ fn execute_proposal(
 
     let mut integration_engine = IntegrationEngine::new(project_root).ok();
 
+    // Phase 3+4: Hoist shared detectors to loop level to avoid race conditions
+    // and redundant disk I/O in parallel batch execution.
+    let mut error_pattern_detector =
+        zn_evolve::error_patterns::ErrorPatternDetector::new(project_root, 2).ok();
+    let learning_memory_manager =
+        zn_spec::learning_memory::LearningMemoryManager::new(project_root).ok();
+
     loop {
         let elapsed = (Utc::now() - loop_start).num_seconds() as u64;
         if state.iteration >= max_total_iterations {
@@ -1225,15 +1232,17 @@ fn execute_proposal(
             }
 
             // Phase 4: Record learning outcome for cross-proposal memory
-            if let Err(e) = zn_spec::learning_memory::LearningMemoryManager::new(project_root)
-                .and_then(|mgr| mgr.record_outcome(&report))
-            {
-                info!("Learning memory recording skipped: {}", e);
+            if let Some(ref mgr) = learning_memory_manager {
+                if let Err(e) = mgr.record_outcome(&report) {
+                    info!("Learning memory recording skipped: {}", e);
+                }
             }
 
             // Phase 3: Feed signal into error pattern detector
-            if let Err(e) = process_error_patterns(project_root, &report) {
-                info!("Error pattern processing skipped: {}", e);
+            if let Some(ref mut detector) = error_pattern_detector {
+                if let Err(e) = process_error_patterns(detector, &report) {
+                    info!("Error pattern processing skipped: {}", e);
+                }
             }
 
             if let Some(candidate) = propose_candidate(&report) {
@@ -2461,20 +2470,21 @@ fn check_cron_discovered_tasks(project_root: &Path, proposal: &mut Proposal) -> 
 /// Feeds the execution report's signals into the pattern detector,
 /// generates remediation candidates for recurring patterns, and
 /// persists them for the evolution system to consume.
-fn process_error_patterns(project_root: &Path, report: &ExecutionReport) -> Result<()> {
-    use zn_evolve::error_patterns::ErrorPatternDetector;
+fn process_error_patterns(
+    detector: &mut zn_evolve::error_patterns::ErrorPatternDetector,
+    report: &ExecutionReport,
+) -> Result<()> {
     use zn_evolve::signal_detector::SignalDetector;
 
-    let detector = SignalDetector::default();
-    let signals = detector.detect(report);
+    let signal_detector = SignalDetector::default();
+    let signals = signal_detector.detect(report);
 
-    let mut pattern_detector = ErrorPatternDetector::new(project_root, 2)?;
     for signal in &signals {
-        let actionable = pattern_detector.ingest_signal(signal)?;
+        let actionable = detector.ingest_signal(signal)?;
         for pattern in actionable {
-            if let Some(candidate) = pattern_detector.generate_remediation(&pattern) {
-                let candidates_dir = project_root.join(".zero_nine/evolve/candidates");
-                std::fs::create_dir_all(&candidates_dir)?;
+            if let Some(candidate) = detector.generate_remediation(&pattern) {
+                let candidates_dir = Path::new(".zero_nine/evolve/candidates");
+                std::fs::create_dir_all(candidates_dir)?;
                 let path = candidates_dir.join(format!(
                     "pattern-{}-{}.json",
                     pattern.id,

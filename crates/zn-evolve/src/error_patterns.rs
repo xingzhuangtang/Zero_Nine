@@ -136,6 +136,10 @@ impl ErrorPatternDetector {
     }
 
     /// Compute a normalized signature for a signal.
+    ///
+    /// TODO: This naive approach (first note, lowercase, truncate to 120 chars)
+    /// can merge distinct errors with similar prefixes. Consider using a
+    /// hash-based fingerprint or LLM-assisted error clustering for production.
     fn compute_signature(&self, signal: &EvolutionSignal) -> String {
         let raw = signal.notes.first().cloned().unwrap_or_default();
         let normalized: String = raw

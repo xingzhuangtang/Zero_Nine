@@ -36,7 +36,11 @@
       "Bash(grep -v \"zn-exec\\\\|zn-loop\\\\|zn-spec\\\\|zn-host\\\\|zn-cli.*unused variable: \\\\`now\\\\`\")",
       "Bash(gh pr *)",
       "Bash(cargo check *)",
-      "Bash(grep -n \"^}$\" /Users/tangxingzhuang/Freedom/Zero_Nine/crates/zn-evolve/src/distiller.rs)"
+      "Bash(grep -n \"^}$\" /Users/tangxingzhuang/Freedom/Zero_Nine/crates/zn-evolve/src/distiller.rs)",
+      "Bash(brew install *)",
+      "Bash(gh *)",
+      "WebFetch(domain:www.bilibili.com)",
+      "WebFetch(domain:m.toutiao.com)"
     ]
   },
   "hooks": {

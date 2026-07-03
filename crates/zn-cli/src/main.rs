@@ -2022,7 +2022,8 @@ fn main() -> Result<()> {
                     }
                 }
                 GithubCommands::Poll { repo } => {
-                    match zn_loop::github_poll::poll_github_issues(&project, repo.as_deref()) {
+                    match zn_loop::github_poll::poll_github_issues(&project, repo.as_deref(), None)
+                    {
                         Ok(count) => {
                             if count == 0 {
                                 println!("No new issues to register as cron jobs");

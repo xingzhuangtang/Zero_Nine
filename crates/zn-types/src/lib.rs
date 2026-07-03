@@ -4,6 +4,7 @@
 //! Types are organized into thematic modules but re-exported at the crate root
 //! to maintain backward compatibility with existing `use zn_types::*` imports.
 
+pub mod a2a;
 pub mod core;
 pub mod drift;
 pub mod error;
@@ -11,13 +12,17 @@ pub mod evolution;
 pub mod execution;
 pub mod github;
 pub mod governance;
+pub mod memory;
 pub mod proposal;
+pub mod security;
 pub mod state_machine;
+pub mod team;
 
 // ==================== Re-exports ====================
 // All types are re-exported at the crate root for backward compatibility.
 // Downstream crates can continue using `use zn_types::TypeName;` without changes.
 
+pub use a2a::*;
 pub use core::*;
 pub use drift::*;
 pub use error::*;
@@ -25,8 +30,11 @@ pub use evolution::*;
 pub use execution::*;
 pub use github::*;
 pub use governance::*;
+pub use memory::*;
 pub use proposal::*;
+pub use security::*;
 pub use state_machine::*;
+pub use team::*;
 
 // ==================== Tests ====================
 // Tests remain in lib.rs to validate cross-module integration.

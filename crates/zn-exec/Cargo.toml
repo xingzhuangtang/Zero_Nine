@@ -20,6 +20,7 @@ uuid.workspace = true
 zn-types = { path = "../zn-types" }
 zn-bridge = { path = "../zn-bridge" }
 zn-evolve = { path = "../zn-evolve" }
+zn-spec = { path = "../zn-spec" }
 reqwest.workspace = true
 regex.workspace = true
 sha2.workspace = true

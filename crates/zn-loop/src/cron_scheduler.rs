@@ -341,6 +341,38 @@ impl CronScheduler {
             failed_runs,
         }
     }
+
+    /// Execute pending jobs, calling the provided callback for each one.
+    ///
+    /// The callback receives the job ID and goal string, and should return
+    /// whether the execution succeeded. This allows the caller (e.g. `run_goal`)
+    /// to handle the actual execution while the scheduler manages timing and state.
+    pub fn execute_pending_jobs<F>(&mut self, mut callback: F) -> Result<Vec<(String, bool)>>
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
+        let pending = self.get_pending_jobs();
+        let mut results = Vec::new();
+
+        for job in pending {
+            let job_id = job.id.clone();
+            // Extract goal from payload
+            let goal = job
+                .payload
+                .get("goal")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&job.description);
+
+            let start_ms = std::time::Instant::now();
+            let success = callback(&job_id, goal);
+            let duration_ms = start_ms.elapsed().as_millis() as u64;
+
+            self.record_execution(&job_id, success, None, Some(duration_ms))?;
+            results.push((job_id, success));
+        }
+
+        Ok(results)
+    }
 }
 
 /// Cron statistics
@@ -567,6 +599,45 @@ mod tests {
 
         scheduler.cancel("test-job").unwrap();
         assert_eq!(scheduler.list_jobs().len(), 0);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_execute_pending_jobs_callback() {
+        let tmp_dir = temp_dir().join(format!("zn-cron-exec-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let mut scheduler = CronScheduler::new(&tmp_dir).unwrap();
+
+        // Create a job that runs every minute (will be pending)
+        let job = create_recurring_job(
+            "exec-job",
+            "* * * * *",
+            "Test execution job",
+            serde_json::json!({"goal": "build the project"}),
+            None,
+        );
+        scheduler.schedule(job).unwrap();
+
+        // Execute pending jobs with a callback
+        let results = scheduler
+            .execute_pending_jobs(|_job_id, goal| {
+                // Callback just records the goal
+                assert_eq!(goal, "build the project");
+                true // simulate success
+            })
+            .unwrap();
+
+        assert!(!results.is_empty());
+        let (job_id, success) = &results[0];
+        assert_eq!(job_id, "exec-job");
+        assert!(success);
+
+        // Verify state was updated
+        let job = scheduler.get_job("exec-job").unwrap();
+        assert!(job.last_run.is_some());
+        assert_eq!(job.run_count, 1);
 
         let _ = fs::remove_dir_all(&tmp_dir);
     }
