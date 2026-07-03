@@ -291,6 +291,14 @@ enum EvolveCommands {
         #[arg(long)]
         auto_sync: Option<bool>,
     },
+    /// Show detected error patterns
+    Patterns {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Minimum occurrences to show
+        #[arg(long, default_value_t = 1)]
+        min_count: u32,
+    },
 }
 
 /// Observability and tracing commands
@@ -464,6 +472,10 @@ enum MemoryCommands {
     },
     /// Show memory statistics
     Stats,
+    /// Show learning statistics
+    LearnStats,
+    /// Search learned patterns
+    SearchPatterns { query: String },
 }
 
 /// MCP management commands
@@ -695,6 +707,16 @@ enum GithubCommands {
         issue: u64,
         #[arg(long)]
         proposal: String,
+    },
+    /// Poll GitHub for open issues and register as cron jobs
+    Poll {
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Scan for recent CI failures and register remediation jobs
+    ScanCI {
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -1289,6 +1311,49 @@ fn main() -> Result<()> {
                     );
                     println!("  Brainstorm Sessions: {}", stats.brainstorm_sessions);
                     println!("  Execution Sessions: {}", stats.execution_sessions);
+                }
+                MemoryCommands::LearnStats => {
+                    match zn_spec::learning_memory::LearningMemoryManager::new(&project) {
+                        Ok(mgr) => match mgr.get_failure_stats() {
+                            Ok(stats) => {
+                                println!("Learning Statistics:");
+                                println!("  Total Executions: {}", stats.total_executions);
+                                println!("  Failures: {}", stats.failures);
+                                println!(
+                                    "  Unique Failure Patterns: {}",
+                                    stats.unique_failure_patterns
+                                );
+                                println!("  Success Rate: {:.1}%", stats.success_rate * 100.0);
+                            }
+                            Err(e) => println!("Failed to get failure stats: {}", e),
+                        },
+                        Err(e) => println!("Failed to initialize learning memory: {}", e),
+                    }
+                }
+                MemoryCommands::SearchPatterns { query } => {
+                    match zn_spec::learning_memory::LearningMemoryManager::new(&project) {
+                        Ok(mgr) => match mgr.find_relevant_patterns(&query) {
+                            Ok(results) => {
+                                if results.entries.is_empty() {
+                                    println!("No learned patterns found for '{}'", query);
+                                } else {
+                                    println!(
+                                        "Found {} learned pattern(s) for '{}':\n",
+                                        results.total, query
+                                    );
+                                    for (i, entry) in results.entries.iter().enumerate() {
+                                        println!("{}. [{:?}] {}", i + 1, entry.level, entry.key);
+                                        println!(
+                                            "   {}\n",
+                                            entry.content.chars().take(120).collect::<String>()
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => println!("Failed to search patterns: {}", e),
+                        },
+                        Err(e) => println!("Failed to initialize learning memory: {}", e),
+                    }
                 }
             }
         }
@@ -1956,6 +2021,36 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+                GithubCommands::Poll { repo } => {
+                    match zn_loop::github_poll::poll_github_issues(&project, repo.as_deref()) {
+                        Ok(count) => {
+                            if count == 0 {
+                                println!("No new issues to register as cron jobs");
+                            } else {
+                                println!("Registered {} open issue(s) as cron job(s)", count);
+                                println!("Use `zero-nine cron list` to see scheduled jobs");
+                            }
+                        }
+                        Err(e) => {
+                            println!("Failed to poll GitHub issues: {}", e);
+                        }
+                    }
+                }
+                GithubCommands::ScanCI { repo } => {
+                    match zn_loop::github_poll::scan_ci_failures(&project, repo.as_deref()) {
+                        Ok(count) => {
+                            if count == 0 {
+                                println!("No recent CI failures to register");
+                            } else {
+                                println!("Registered {} CI failure remediation job(s)", count);
+                                println!("Use `zero-nine cron list` to see scheduled jobs");
+                            }
+                        }
+                        Err(e) => {
+                            println!("Failed to scan CI failures: {}", e);
+                        }
+                    }
+                }
             }
         }
         Commands::Dashboard { project } => {
@@ -2210,7 +2305,8 @@ fn main() -> Result<()> {
                 EvolveCommands::Decision { project }
                 | EvolveCommands::Snapshot { project }
                 | EvolveCommands::Reset { project, .. }
-                | EvolveCommands::Sync { project, .. } => project,
+                | EvolveCommands::Sync { project, .. }
+                | EvolveCommands::Patterns { project, .. } => project,
             };
             let project_root = project_root
                 .canonicalize()
@@ -2427,6 +2523,49 @@ fn main() -> Result<()> {
                             Ok::<_, anyhow::Error>(())
                         })?;
                         println!("Sync complete.");
+                    }
+                }
+                EvolveCommands::Patterns { project, min_count } => {
+                    let detector =
+                        zn_evolve::error_patterns::ErrorPatternDetector::new(&project, min_count)?;
+                    let stats = detector.get_stats();
+                    let patterns = detector.all_patterns();
+
+                    if patterns.is_empty() {
+                        println!("No error patterns detected");
+                    } else {
+                        println!("Error Pattern Statistics:");
+                        println!("  Total patterns: {}", stats.total);
+                        println!(
+                            "  Actionable (≥{} occurrences): {}",
+                            stats.actionable, min_count
+                        );
+                        println!("  Total signals ingested: {}", stats.total_signals);
+                        println!("  Total occurrences: {}\n", stats.total_occurrences);
+
+                        println!("Detected Patterns:");
+                        for (i, p) in patterns.iter().enumerate() {
+                            let actionable = if p.occurrence_count >= min_count {
+                                "ACTIONABLE"
+                            } else {
+                                "monitoring"
+                            };
+                            println!(
+                                "{}. [{}] {} ({} occurrences, {} tasks, conf: {:.2})",
+                                i + 1,
+                                actionable,
+                                p.signature,
+                                p.occurrence_count,
+                                p.affected_tasks.len(),
+                                p.confidence
+                            );
+                            println!(
+                                "   Action: {:?} | First: {} | Last: {}",
+                                p.suggested_action,
+                                p.first_seen.format("%Y-%m-%d %H:%M"),
+                                p.last_seen.format("%Y-%m-%d %H:%M")
+                            );
+                        }
                     }
                 }
             }

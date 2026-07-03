@@ -49,6 +49,18 @@ pub use cloud_sync::{
     CloudSyncClient, CloudSyncConfig, CloudSyncState, MergeResult, VersionVector,
 };
 
+// Signal detector - extracts evolution signals from execution reports
+pub mod signal_detector;
+pub use signal_detector::SignalDetector;
+
+// Error patterns - detects recurring error patterns from signals
+pub mod error_patterns;
+pub use error_patterns::ErrorPatternDetector;
+
+// Skill evolver - closed-loop evolution from signal to promotion
+pub mod skill_evolver;
+pub use skill_evolver::SkillEvolver;
+
 pub fn evaluate(report: &ExecutionReport) -> SkillEvaluation {
     let collected_required = report
         .evidence

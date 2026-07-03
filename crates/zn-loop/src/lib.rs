@@ -1,4 +1,5 @@
 pub mod cron_scheduler;
+pub mod github_poll;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -831,6 +832,17 @@ fn execute_proposal(
     }
 
     // M5: Global budget check before entering execution loop
+    // Loop Engineering Phase 1: Check cron scheduler for auto-discovered tasks
+    if let Ok(discovered) = check_cron_discovered_tasks(project_root, &mut proposal) {
+        if discovered > 0 {
+            info!(
+                "Cron scheduler discovered {} new task(s), re-scheduling",
+                discovered
+            );
+            save_proposal(project_root, &proposal)?;
+        }
+    }
+
     let mut integration_engine = IntegrationEngine::new(project_root).ok();
 
     loop {
@@ -1210,6 +1222,18 @@ fn execute_proposal(
                 ) {
                     info!("IntegrationEngine record_execution failed: {}", e);
                 }
+            }
+
+            // Phase 4: Record learning outcome for cross-proposal memory
+            if let Err(e) = zn_spec::learning_memory::LearningMemoryManager::new(project_root)
+                .and_then(|mgr| mgr.record_outcome(&report))
+            {
+                info!("Learning memory recording skipped: {}", e);
+            }
+
+            // Phase 3: Feed signal into error pattern detector
+            if let Err(e) = process_error_patterns(project_root, &report) {
+                info!("Error pattern processing skipped: {}", e);
             }
 
             if let Some(candidate) = propose_candidate(&report) {
@@ -2381,6 +2405,91 @@ fn render_proposal_verification(
         completed,
         tasks.len()
     )
+}
+
+/// Check cron scheduler for pending jobs and inject discovered work as tasks.
+///
+/// Executes pending cron jobs via callback, converting each into a `TaskItem`
+/// that the DAG scheduler will pick up naturally.
+fn check_cron_discovered_tasks(project_root: &Path, proposal: &mut Proposal) -> Result<usize> {
+    use crate::cron_scheduler::CronScheduler;
+    use zn_types::TaskContract;
+
+    let mut scheduler = CronScheduler::new(project_root)?;
+    let mut discovered = 0;
+
+    scheduler.execute_pending_jobs(|job_id, goal| {
+        // Check if this goal already exists as a task
+        let already_exists = proposal
+            .tasks
+            .iter()
+            .any(|t| t.title.contains(job_id) || t.description.contains(job_id));
+        if already_exists {
+            return true; // Already tracked
+        }
+
+        let body_preview = goal.chars().take(200).collect::<String>();
+        let new_task = zn_types::TaskItem {
+            id: format!("cron-{}", job_id),
+            title: format!(
+                "Cron: {}",
+                body_preview.chars().take(60).collect::<String>()
+            ),
+            description: goal.to_string(),
+            status: zn_types::TaskStatus::Pending,
+            depends_on: vec![],
+            kind: Some("cron-discovered".to_string()),
+            contract: TaskContract {
+                acceptance_criteria: vec![goal.to_string()],
+                deliverables: vec!["Cron job execution completed".to_string()],
+                verification_points: vec!["Cron job completed successfully".to_string()],
+            },
+            max_retries: Some(1),
+            preconditions: vec![],
+        };
+        proposal.tasks.push(new_task);
+        discovered += 1;
+        true // success
+    })?;
+
+    scheduler.save_state()?;
+    Ok(discovered)
+}
+
+/// Process execution report through the error pattern detector.
+///
+/// Feeds the execution report's signals into the pattern detector,
+/// generates remediation candidates for recurring patterns, and
+/// persists them for the evolution system to consume.
+fn process_error_patterns(project_root: &Path, report: &ExecutionReport) -> Result<()> {
+    use zn_evolve::error_patterns::ErrorPatternDetector;
+    use zn_evolve::signal_detector::SignalDetector;
+
+    let detector = SignalDetector::default();
+    let signals = detector.detect(report);
+
+    let mut pattern_detector = ErrorPatternDetector::new(project_root, 2)?;
+    for signal in &signals {
+        let actionable = pattern_detector.ingest_signal(signal)?;
+        for pattern in actionable {
+            if let Some(candidate) = pattern_detector.generate_remediation(&pattern) {
+                let candidates_dir = project_root.join(".zero_nine/evolve/candidates");
+                std::fs::create_dir_all(&candidates_dir)?;
+                let path = candidates_dir.join(format!(
+                    "pattern-{}-{}.json",
+                    pattern.id,
+                    Utc::now().timestamp_millis()
+                ));
+                std::fs::write(path, serde_json::to_string_pretty(&candidate)?)?;
+                info!(
+                    "Generated pattern-based remediation candidate: {} (confidence {:.2})",
+                    pattern.signature, pattern.confidence
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
