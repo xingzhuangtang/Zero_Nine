@@ -293,6 +293,7 @@ fn test_status_shows_completed() {
 // --- Resume tests ---
 
 #[test]
+#[ignore] // Slow integration test (~15h), covered by unit tests
 fn test_resume_after_run_noops() {
     let dir = TempDir::new().unwrap();
     init_project(dir.path());
